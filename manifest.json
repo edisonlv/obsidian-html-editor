@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-html-editor",
+  "name": "HTML Editor",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "View and edit HTML files with live preview, Monaco Editor source editing, and split-pane layout.",
+  "author": "Edison",
+  "isDesktopOnly": false
+}
