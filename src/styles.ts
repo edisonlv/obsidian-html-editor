@@ -80,21 +80,40 @@ export const STYLES = `
   display: none;
 }
 
-/* ── Source Pane (CodeMirror) ── */
+/* ── Source Pane (textarea) ── */
 .html-editor-source-pane {
   flex: 1;
   overflow: hidden;
   position: relative;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-.html-editor-source-pane .cm-editor {
+.html-editor-editor-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.html-editor-cm-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.html-editor-cm-host .cm-editor {
   height: 100%;
 }
 
-.html-editor-source-pane .cm-editor.cm-focused {
-  outline: none;
+.html-editor-cm-host .cm-scroller {
+  min-height: 100%;
 }
+
+/* CodeMirror 选区与主题在 htmlEditorCm.ts 中通过 EditorView.theme 设置 */
 
 /* ── Resize Handle ── */
 .html-editor-resize-handle {

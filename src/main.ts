@@ -1,21 +1,37 @@
-import { Plugin } from "obsidian";
+import { Notice, Plugin } from "obsidian";
 import { VIEW_TYPE_HTML, SUPPORTED_EXTENSIONS, ViewMode } from "./constants";
 import { HtmlView } from "./HtmlView";
-import { HtmlEditorSettings, DEFAULT_SETTINGS, HtmlEditorSettingTab } from "./settings";
+import {
+  HtmlEditorSettings,
+  HtmlEditorSettingTab,
+  sanitizeHtmlEditorSettings,
+} from "./settings";
 import { STYLES } from "./styles";
 
 export default class HtmlEditorPlugin extends Plugin {
-  settings: HtmlEditorSettings;
+  settings!: HtmlEditorSettings;
   private styleEl: HTMLStyleElement | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
     this.injectStyles();
 
-    this.registerView(VIEW_TYPE_HTML, (leaf) => new HtmlView(leaf, this));
-    this.registerExtensions(SUPPORTED_EXTENSIONS, VIEW_TYPE_HTML);
-    this.addSettingTab(new HtmlEditorSettingTab(this.app, this));
+    this.app.workspace.onLayoutReady(() => {
+      this.registerView(VIEW_TYPE_HTML, (leaf) => new HtmlView(leaf, this));
+      try {
+        this.registerExtensions(SUPPORTED_EXTENSIONS, VIEW_TYPE_HTML);
+      } catch (e) {
+        console.error("[obsidian-html-editor] registerExtensions failed:", e);
+        new Notice(
+          "HTML Editor：无法注册 .html/.htm（可能与其它插件冲突）。请查看控制台日志；仍可尝试从命令面板使用本插件相关命令。"
+        );
+      }
+      this.addSettingTab(new HtmlEditorSettingTab(this.app, this));
+      this.registerCommands();
+    });
+  }
 
+  private registerCommands(): void {
     this.addCommand({
       id: "toggle-view-mode",
       name: "Toggle view mode (Preview / Source / Split)",
@@ -24,7 +40,7 @@ export default class HtmlEditorPlugin extends Plugin {
         if (!view) return false;
         if (checking) return true;
         const modes = [ViewMode.Preview, ViewMode.Source, ViewMode.Split];
-        const current = (view as any).currentMode as ViewMode;
+        const current = view.currentMode;
         const idx = modes.indexOf(current);
         const next = modes[(idx + 1) % modes.length];
         view.switchMode(next);
@@ -72,10 +88,27 @@ export default class HtmlEditorPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    let raw: unknown;
+    try {
+      raw = await this.loadData();
+    } catch (e) {
+      console.error("[obsidian-html-editor] loadData failed, using defaults:", e);
+      raw = undefined;
+    }
+    this.settings = sanitizeHtmlEditorSettings(raw ?? {});
   }
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  /** 所有已打开的 HTML 视图重建源码区（行号开关等） */
+  rebuildAllHtmlEditorChrome(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_HTML)) {
+      const view = leaf.view;
+      if (view instanceof HtmlView) {
+        view.rebuildEditorChrome();
+      }
+    }
   }
 }

@@ -1,40 +1,28 @@
 {
   "name": "obsidian-html-editor",
-  "version": "1.0.0",
-  "description": "View and edit HTML files in Obsidian with live preview and Monaco Editor",
+  "version": "1.1.1",
+  "description": "View and edit HTML in Obsidian with CodeMirror, live preview, and optional WYSIWYG in preview",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
   },
-  "keywords": [
-    "obsidian",
-    "html",
-    "editor",
-    "preview"
-  ],
+  "keywords": ["obsidian", "html", "editor", "preview"],
   "author": "",
   "license": "MIT",
+  "dependencies": {
+    "@codemirror/commands": "^6.6.2",
+    "@codemirror/lang-html": "^6.4.9",
+    "@codemirror/language": "^6.11.0",
+    "@codemirror/search": "^6.5.10",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.36.4"
+  },
   "devDependencies": {
-    "@codemirror/autocomplete": "^6.20.2",
-    "@codemirror/commands": "^6.10.3",
-    "@codemirror/language": "^6.12.3",
-    "@codemirror/lint": "^6.9.6",
-    "@codemirror/search": "^6.7.0",
-    "@codemirror/state": "^6.6.0",
-    "@codemirror/view": "^6.42.1",
     "@types/node": "^22.0.0",
-    "builtin-modules": "^4.0.0",
     "esbuild": "^0.24.0",
     "obsidian": "latest",
     "tslib": "2.8.1",
     "typescript": "5.7.2"
-  },
-  "dependencies": {
-    "@codemirror/lang-css": "^6.3.1",
-    "@codemirror/lang-html": "^6.4.11",
-    "@codemirror/lang-javascript": "^6.2.5",
-    "dompurify": "^3.2.4",
-    "monaco-editor": "^0.52.2"
   }
 }

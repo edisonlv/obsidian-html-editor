@@ -1,33 +1,30 @@
 import { TextFileView, WorkspaceLeaf, Notice } from "obsidian";
+import { EditorView } from "@codemirror/view";
+import { cmScrollToLine, createHtmlCodeMirror } from "./htmlEditorCm";
 import { VIEW_TYPE_HTML, ViewMode } from "./constants";
 import type HtmlEditorPlugin from "./main";
 
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection } from "@codemirror/view";
-import { EditorState, Compartment } from "@codemirror/state";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching, foldGutter, foldKeymap } from "@codemirror/language";
-import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-import { html } from "@codemirror/lang-html";
-
 export class HtmlView extends TextFileView {
   plugin: HtmlEditorPlugin;
-  private currentMode: ViewMode;
+  currentMode: ViewMode;
+  private cmHostEl!: HTMLElement;
   private cmView: EditorView | null = null;
+  private editorWrapEl!: HTMLElement;
   private previewFrame: HTMLIFrameElement | null = null;
-  private toolbarEl: HTMLElement;
-  private contentArea: HTMLElement;
-  private resizeHandle: HTMLElement;
-  private statusEl: HTMLElement;
-  private scriptToggleBtn: HTMLElement;
+  private toolbarEl!: HTMLElement;
+  private contentArea!: HTMLElement;
+  private resizeHandle!: HTMLElement;
+  private statusEl!: HTMLElement;
+  private scriptToggleBtn!: HTMLElement;
+  private previewEditBtn!: HTMLElement;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private previewSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private isDragging = false;
-  private sourcePane: HTMLElement;
-  private previewPane: HTMLElement;
-  private wordWrapCompartment = new Compartment();
-  private lineNumbersCompartment = new Compartment();
+  private sourcePane!: HTMLElement;
+  private previewPane!: HTMLElement;
   private messageHandler: ((e: MessageEvent) => void) | null = null;
-  private data_: string = "";
+  /** 从预览反写 CM 时跳过 updateListener 里的「刷新 iframe」 */
+  private pushingFromPreview = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: HtmlEditorPlugin) {
     super(leaf);
@@ -59,7 +56,8 @@ export class HtmlView extends TextFileView {
     this.updateContentMode();
 
     this.sourcePane = this.contentArea.createDiv("html-editor-source-pane");
-    this.initCodeMirror();
+    this.editorWrapEl = this.sourcePane.createDiv("html-editor-editor-wrap");
+    this.buildEditorSurface();
 
     this.resizeHandle = this.contentArea.createDiv("html-editor-resize-handle");
     this.setupResize();
@@ -76,87 +74,51 @@ export class HtmlView extends TextFileView {
       }
     };
     window.addEventListener("message", this.messageHandler);
+
+    this.updateStatus();
   }
 
-  private initCodeMirror(): void {
+  rebuildEditorChrome(): void {
+    if (!this.editorWrapEl) return;
+    const text = this.cmView?.state.doc.toString() ?? this.data ?? "";
+    const hadFocus = this.cmView?.hasFocus ?? false;
+    this.data = text;
+    this.destroyCm();
+    this.buildEditorSurface();
+    if (hadFocus) this.cmView?.focus();
+    this.updateStatus();
+    if (this.currentMode === ViewMode.Preview || this.currentMode === ViewMode.Split) {
+      this.refreshPreview();
+    }
+  }
+
+  private destroyCm(): void {
+    if (this.cmView) {
+      this.cmView.destroy();
+      this.cmView = null;
+    }
+  }
+
+  private buildEditorSurface(): void {
+    this.editorWrapEl.empty();
+    this.cmHostEl = this.editorWrapEl.createDiv("html-editor-cm-host");
     const s = this.plugin.settings;
-
-    const updateListener = EditorView.updateListener.of((update) => {
-      if (update.docChanged) {
-        this.data_ = update.state.doc.toString();
-        this.requestSave();
-        this.schedulePreviewRefresh();
-        this.updateStatus();
-      }
+    this.cmView = createHtmlCodeMirror(this.cmHostEl, {
+      doc: this.data ?? "",
+      fontSize: s.fontSize,
+      wordWrap: s.wordWrap,
+      showLineNumbers: s.lineNumbers,
+      onDocChange: (t) => this.onCmDocChange(t),
+      onSaveRequest: () => this.requestSave(),
     });
+  }
 
-    const state = EditorState.create({
-      doc: this.data_,
-      extensions: [
-        this.lineNumbersCompartment.of(s.lineNumbers ? lineNumbers() : []),
-        highlightActiveLineGutter(),
-        history(),
-        foldGutter(),
-        drawSelection(),
-        rectangularSelection(),
-        indentOnInput(),
-        bracketMatching(),
-        closeBrackets(),
-        highlightActiveLine(),
-        highlightSelectionMatches(),
-        this.wordWrapCompartment.of(s.wordWrap ? EditorView.lineWrapping : []),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-        html(),
-        keymap.of([
-          ...closeBracketsKeymap,
-          ...defaultKeymap,
-          ...searchKeymap,
-          ...historyKeymap,
-          ...foldKeymap,
-          indentWithTab,
-        ]),
-        updateListener,
-        EditorView.theme({
-          "&": {
-            height: "100%",
-            fontSize: `${s.fontSize}px`,
-          },
-          ".cm-scroller": {
-            overflow: "auto",
-            fontFamily: "var(--font-monospace)",
-          },
-          ".cm-content": {
-            padding: "8px 0",
-          },
-          ".cm-gutters": {
-            background: "var(--background-secondary)",
-            color: "var(--text-faint)",
-            border: "none",
-            borderRight: "1px solid var(--background-modifier-border)",
-          },
-          ".cm-activeLineGutter": {
-            background: "var(--background-modifier-hover)",
-          },
-          ".cm-activeLine": {
-            background: "var(--background-secondary-alt, rgba(0,0,0,0.04))",
-          },
-          "&.cm-focused .cm-cursor": {
-            borderLeftColor: "var(--text-normal)",
-          },
-          "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-            background: "var(--text-selection, rgba(100, 100, 255, 0.2))",
-          },
-          ".cm-foldGutter .cm-gutterElement": {
-            padding: "0 4px",
-          },
-        }),
-      ],
-    });
-
-    this.cmView = new EditorView({
-      state,
-      parent: this.sourcePane,
-    });
+  private onCmDocChange(text: string): void {
+    if (this.pushingFromPreview) return;
+    this.data = text;
+    this.requestSave();
+    this.schedulePreviewRefresh();
+    this.updateStatus();
   }
 
   private buildToolbar(): void {
@@ -183,6 +145,30 @@ export class HtmlView extends TextFileView {
     openBtn.addEventListener("click", () => this.openInBrowser());
 
     this.toolbarEl.createDiv("toolbar-spacer");
+
+    this.previewEditBtn = this.toolbarEl.createEl("button", {
+      text: this.plugin.settings.previewEditable ? "预览编辑: ON" : "预览编辑: OFF",
+    });
+    if (this.plugin.settings.previewEditable) this.previewEditBtn.addClass("is-active");
+    this.previewEditBtn.setAttribute(
+      "title",
+      this.plugin.settings.previewEditable
+        ? "右侧可直接改文字；拖选文字可定位左侧；或 Alt+单击元素定位"
+        : "关闭后右侧只读；单击元素可跳到左侧对应行"
+    );
+    this.previewEditBtn.addEventListener("click", async () => {
+      this.plugin.settings.previewEditable = !this.plugin.settings.previewEditable;
+      await this.plugin.saveSettings();
+      this.previewEditBtn.textContent = this.plugin.settings.previewEditable ? "预览编辑: ON" : "预览编辑: OFF";
+      this.previewEditBtn.toggleClass("is-active", this.plugin.settings.previewEditable);
+      this.previewEditBtn.setAttribute(
+        "title",
+        this.plugin.settings.previewEditable
+          ? "右侧可直接改文字；拖选文字可定位左侧；或 Alt+单击元素定位"
+          : "关闭后右侧只读；单击元素可跳到左侧对应行"
+      );
+      this.refreshPreview();
+    });
 
     this.scriptToggleBtn = this.toolbarEl.createEl("button", {
       text: this.plugin.settings.allowScripts ? "JS: ON" : "JS: OFF",
@@ -271,16 +257,13 @@ export class HtmlView extends TextFileView {
   }
 
   private updateStatus(): void {
-    if (!this.statusEl) return;
-    const doc = this.cmView?.state.doc;
-    if (!doc) return;
-    const lines = doc.lines;
-    const chars = doc.length;
-    this.statusEl.textContent = `${lines} lines · ${chars} chars`;
+    if (!this.statusEl || !this.cmView) return;
+    const doc = this.cmView.state.doc;
+    this.statusEl.textContent = `${doc.lines} lines · ${doc.length} chars`;
   }
 
   refreshPreview(): void {
-    const content = this.data_;
+    const content = this.data ?? "";
 
     if (this.previewFrame) {
       this.previewFrame.remove();
@@ -292,28 +275,79 @@ export class HtmlView extends TextFileView {
       htmlToRender = this.stripScripts(content);
     }
 
-    const withLineTracking = this.injectLineTracking(htmlToRender);
+    const withLineTracking = this.injectLineTracking(htmlToRender, this.plugin.settings.previewEditable);
 
+    // 必须含 allow-scripts，否则 srcdoc 内注入的定位脚本无法执行（JS:OFF 时已先 strip 用户 script）
     const sandboxAttr = this.plugin.settings.allowScripts
       ? "allow-scripts allow-same-origin allow-forms allow-popups"
-      : "allow-same-origin";
+      : "allow-scripts allow-same-origin";
 
     this.previewFrame = this.previewPane.createEl("iframe", {
       attr: { sandbox: sandboxAttr },
     });
 
     this.previewFrame.srcdoc = withLineTracking;
+    this.previewFrame.addEventListener(
+      "load",
+      () => {
+        this.onPreviewFrameLoaded();
+      },
+      { once: true }
+    );
+  }
+
+  private onPreviewFrameLoaded(): void {
+    const doc = this.previewFrame?.contentDocument;
+    if (!doc) return;
+
+    if (this.plugin.settings.previewEditable) {
+      try {
+        doc.designMode = "on";
+      } catch {
+        /* 部分沙箱环境可能禁止 */
+      }
+      doc.addEventListener("input", () => this.schedulePreviewSyncFromIframe());
+    }
+  }
+
+  private schedulePreviewSyncFromIframe(): void {
+    if (this.previewSyncTimer) clearTimeout(this.previewSyncTimer);
+    this.previewSyncTimer = setTimeout(() => {
+      this.syncFromPreviewIframe();
+    }, 400);
+  }
+
+  /** 将 iframe 内当前 DOM 序列化回左侧源码（不整页重刷预览，避免打断在右侧的编辑） */
+  private syncFromPreviewIframe(): void {
+    const doc = this.previewFrame?.contentDocument;
+    if (!doc || !this.cmView) return;
+    const serialized = this.serializePreviewDocument(doc);
+    if (serialized === this.data) return;
+    this.pushingFromPreview = true;
+    try {
+      this.cmView.dispatch({
+        changes: { from: 0, to: this.cmView.state.doc.length, insert: serialized },
+      });
+      this.data = serialized;
+      this.requestSave();
+      this.updateStatus();
+    } finally {
+      this.pushingFromPreview = false;
+    }
+  }
+
+  private serializePreviewDocument(doc: Document): string {
+    let html = doc.documentElement.outerHTML;
+    html = html.replace(/<script[^>]*data-injected="html-editor"[\s\S]*?<\/script>/gi, "");
+    html = html.replace(/\s*data-source-line="[^"]*"/gi, "");
+    return html;
   }
 
   private stripScripts(html: string): string {
     return html.replace(/<script[\s\S]*?<\/script>/gi, "");
   }
 
-  /**
-   * Inject data-source-line attributes on each opening HTML tag,
-   * plus a click handler script that posts a message with the line number.
-   */
-  private injectLineTracking(source: string): string {
+  private injectLineTracking(source: string, previewEditable: boolean): string {
     const lines = source.split("\n");
     const tagged: string[] = [];
 
@@ -331,9 +365,33 @@ export class HtmlView extends TextFileView {
       );
     }
 
+    const altGuard = previewEditable ? "if (!e.altKey) return;" : "";
+
+    const selectionLocate = previewEditable
+      ? `
+document.addEventListener('mouseup', function() {
+  var sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  var node = sel.anchorNode;
+  if (!node) return;
+  var el = node.nodeType === 1 ? node : node.parentElement;
+  while (el && el !== document.body && (!el.dataset || !el.dataset.sourceLine)) {
+    el = el.parentElement;
+  }
+  if (el && el.dataset && el.dataset.sourceLine) {
+    window.parent.postMessage({
+      type: 'html-editor-locate-line',
+      line: parseInt(el.dataset.sourceLine, 10)
+    }, '*');
+  }
+});
+`
+      : "";
+
     const clickScript = `
 <script data-injected="html-editor">
 document.addEventListener('click', function(e) {
+  ${altGuard}
   var el = e.target;
   while (el && el !== document.body && !el.dataset.sourceLine) {
     el = el.parentElement;
@@ -346,21 +404,7 @@ document.addEventListener('click', function(e) {
     }, '*');
   }
 }, true);
-
-document.addEventListener('mouseover', function(e) {
-  document.querySelectorAll('[data-source-line]').forEach(function(el) {
-    el.style.removeProperty('outline');
-    el.style.removeProperty('outline-offset');
-  });
-  var el = e.target;
-  while (el && el !== document.body && !el.dataset.sourceLine) {
-    el = el.parentElement;
-  }
-  if (el && el.dataset && el.dataset.sourceLine) {
-    el.style.outline = '2px solid rgba(99, 102, 241, 0.5)';
-    el.style.outlineOffset = '2px';
-  }
-});
+${selectionLocate}
 </script>`;
 
     let result = tagged.join("\n");
@@ -375,21 +419,11 @@ document.addEventListener('mouseover', function(e) {
   }
 
   private scrollToLine(line: number): void {
-    if (!this.cmView) return;
-
     if (this.currentMode === ViewMode.Preview) {
       this.switchMode(ViewMode.Split);
     }
-
-    const doc = this.cmView.state.doc;
-    if (line < 1 || line > doc.lines) return;
-
-    const lineInfo = doc.line(line);
-    this.cmView.dispatch({
-      selection: { anchor: lineInfo.from },
-      effects: EditorView.scrollIntoView(lineInfo.from, { y: "center" }),
-    });
-    this.cmView.focus();
+    if (!this.cmView) return;
+    cmScrollToLine(this.cmView, line);
   }
 
   private async openInBrowser(): Promise<void> {
@@ -404,36 +438,35 @@ document.addEventListener('mouseover', function(e) {
   }
 
   getViewData(): string {
-    return this.data_;
+    return this.data;
   }
 
   setViewData(data: string, clear: boolean): void {
-    this.data_ = data;
-
+    this.data = data;
     if (this.cmView) {
-      const currentDoc = this.cmView.state.doc.toString();
-      if (currentDoc !== data) {
+      this.pushingFromPreview = true;
+      try {
         this.cmView.dispatch({
-          changes: { from: 0, to: currentDoc.length, insert: data },
+          changes: { from: 0, to: this.cmView.state.doc.length, insert: data },
         });
+      } finally {
+        this.pushingFromPreview = false;
       }
     }
-
     this.updateStatus();
-
     if (this.currentMode === ViewMode.Preview || this.currentMode === ViewMode.Split) {
       this.refreshPreview();
     }
   }
 
   clear(): void {
-    this.data_ = "";
+    this.data = "";
     if (this.cmView) {
-      const len = this.cmView.state.doc.length;
-      if (len > 0) {
-        this.cmView.dispatch({ changes: { from: 0, to: len, insert: "" } });
-      }
+      this.cmView.dispatch({
+        changes: { from: 0, to: this.cmView.state.doc.length, insert: "" },
+      });
     }
+    this.updateStatus();
     if (this.previewFrame) {
       this.previewFrame.remove();
       this.previewFrame = null;
@@ -442,14 +475,12 @@ document.addEventListener('mouseover', function(e) {
 
   async onClose(): Promise<void> {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    if (this.previewSyncTimer) clearTimeout(this.previewSyncTimer);
     if (this.messageHandler) {
       window.removeEventListener("message", this.messageHandler);
       this.messageHandler = null;
     }
-    if (this.cmView) {
-      this.cmView.destroy();
-      this.cmView = null;
-    }
+    this.destroyCm();
   }
 
   canAcceptExtension(extension: string): boolean {
