@@ -1,7 +1,7 @@
 {
   "id": "obsidian-html-editor",
   "name": "HTML Editor",
-  "version": "1.1.1",
+  "version": "1.4.0",
   "minAppVersion": "0.15.0",
   "description": "HTML with CodeMirror syntax highlight, live preview, optional WYSIWYG edit in preview (designMode).",
   "author": "Edison",

@@ -1,12 +1,15 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
-import { ViewMode } from "./constants";
+import { PreviewInteractionMode, ViewMode } from "./constants";
 import type HtmlEditorPlugin from "./main";
 
 export interface HtmlEditorSettings {
   defaultMode: ViewMode;
   allowScripts: boolean;
-  /** 右侧 iframe designMode；开启时 Alt+点击 才定位源码行 */
+  /** @deprecated 由 previewInteractionMode 推导，保留以兼容旧 data.json */
   previewEditable: boolean;
+  /** @deprecated 由 previewInteractionMode 推导 */
+  previewDragMove: boolean;
+  previewInteractionMode: PreviewInteractionMode;
   fontSize: number;
   wordWrap: boolean;
   lineNumbers: boolean;
@@ -17,13 +20,25 @@ export interface HtmlEditorSettings {
 export const DEFAULT_SETTINGS: HtmlEditorSettings = {
   defaultMode: ViewMode.Split,
   allowScripts: true,
-  previewEditable: true,
+  previewEditable: false,
+  previewDragMove: false,
+  previewInteractionMode: PreviewInteractionMode.Select,
   fontSize: 14,
   wordWrap: true,
   lineNumbers: true,
   autoRefresh: true,
   refreshDelay: 500,
 };
+
+export function resolvePreviewInteractionMode(s: HtmlEditorSettings): PreviewInteractionMode {
+  return s.previewInteractionMode;
+}
+
+export function syncLegacyPreviewFlags(s: HtmlEditorSettings): void {
+  const mode = resolvePreviewInteractionMode(s);
+  s.previewEditable = mode === PreviewInteractionMode.Text;
+  s.previewDragMove = mode === PreviewInteractionMode.Drag;
+}
 
 /** 合并并校验设置，避免损坏的 data.json 或非法枚举导致插件 onload 崩溃 */
 export function sanitizeHtmlEditorSettings(raw: unknown): HtmlEditorSettings {
@@ -35,7 +50,6 @@ export function sanitizeHtmlEditorSettings(raw: unknown): HtmlEditorSettings {
     m === ViewMode.Preview || m === ViewMode.Source || m === ViewMode.Split;
   if (!validMode(base.defaultMode)) base.defaultMode = DEFAULT_SETTINGS.defaultMode;
   if (typeof base.allowScripts !== "boolean") base.allowScripts = DEFAULT_SETTINGS.allowScripts;
-  if (typeof base.previewEditable !== "boolean") base.previewEditable = DEFAULT_SETTINGS.previewEditable;
   if (typeof base.wordWrap !== "boolean") base.wordWrap = DEFAULT_SETTINGS.wordWrap;
   if (typeof base.lineNumbers !== "boolean") base.lineNumbers = DEFAULT_SETTINGS.lineNumbers;
   if (typeof base.autoRefresh !== "boolean") base.autoRefresh = DEFAULT_SETTINGS.autoRefresh;
@@ -45,6 +59,22 @@ export function sanitizeHtmlEditorSettings(raw: unknown): HtmlEditorSettings {
     base.refreshDelay = DEFAULT_SETTINGS.refreshDelay;
   }
   base.refreshDelay = Math.min(5000, Math.max(50, Math.round(base.refreshDelay)));
+
+  const validInteraction = (m: unknown): m is PreviewInteractionMode =>
+    m === PreviewInteractionMode.Select ||
+    m === PreviewInteractionMode.Text ||
+    m === PreviewInteractionMode.Drag;
+
+  if (!validInteraction(base.previewInteractionMode)) {
+    if (typeof base.previewDragMove === "boolean" && base.previewDragMove) {
+      base.previewInteractionMode = PreviewInteractionMode.Drag;
+    } else if (typeof base.previewEditable === "boolean" && base.previewEditable) {
+      base.previewInteractionMode = PreviewInteractionMode.Text;
+    } else {
+      base.previewInteractionMode = DEFAULT_SETTINGS.previewInteractionMode;
+    }
+  }
+  syncLegacyPreviewFlags(base);
   return base;
 }
 
@@ -81,7 +111,7 @@ export class HtmlEditorSettingTab extends PluginSettingTab {
       .setName("Allow scripts")
       .setDesc(
         "When enabled, JavaScript in HTML files will execute in preview. " +
-        "When disabled, <script> tags are stripped for safety."
+          "When disabled, <script> tags are stripped for safety."
       )
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.allowScripts).onChange(async (value) => {
@@ -132,17 +162,22 @@ export class HtmlEditorSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Preview" });
 
     new Setting(containerEl)
-      .setName("Preview editable (design mode)")
+      .setName("Default preview interaction")
       .setDesc(
-        "When on, edit text in preview; drag-select text to jump to source, or Alt+click an element. " +
-          "When off, preview is read-only and a single click jumps to source."
+        "选择：点选元素并看清层级；改文字：右侧直接编辑；拖动：移动块级元素。三种模式互斥，避免操作冲突。"
       )
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.previewEditable).onChange(async (value) => {
-          this.plugin.settings.previewEditable = value;
-          await this.plugin.saveSettings();
-          this.plugin.rebuildAllHtmlEditorChrome();
-        })
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption(PreviewInteractionMode.Select, "选择元素（推荐）")
+          .addOption(PreviewInteractionMode.Text, "改文字")
+          .addOption(PreviewInteractionMode.Drag, "拖动布局")
+          .setValue(this.plugin.settings.previewInteractionMode)
+          .onChange(async (value) => {
+            this.plugin.settings.previewInteractionMode = value as PreviewInteractionMode;
+            syncLegacyPreviewFlags(this.plugin.settings);
+            await this.plugin.saveSettings();
+            this.plugin.rebuildAllHtmlEditorChrome();
+          })
       );
 
     new Setting(containerEl)

@@ -1,7 +1,30 @@
 import { TextFileView, WorkspaceLeaf, Notice } from "obsidian";
 import { EditorView } from "@codemirror/view";
+import {
+  editBold,
+  editClearFormat,
+  editDeleteBlock,
+  editInsertBr,
+  editInsertH2,
+  editInsertP,
+  editItalic,
+  editLink,
+  editRedo,
+  editStrike,
+  editUnderline,
+  editUndo,
+  type HtmlEditContext,
+  type HtmlEditTarget,
+} from "./htmlEditActions";
 import { cmScrollToLine, createHtmlCodeMirror } from "./htmlEditorCm";
-import { VIEW_TYPE_HTML, ViewMode } from "./constants";
+import { buildPreviewInjectedScript } from "./previewScripts";
+import {
+  PreviewInteractionMode,
+  VIEW_TYPE_HTML,
+  ViewMode,
+  type PreviewElementInfo,
+} from "./constants";
+import { resolvePreviewInteractionMode, syncLegacyPreviewFlags } from "./settings";
 import type HtmlEditorPlugin from "./main";
 
 export class HtmlView extends TextFileView {
@@ -16,7 +39,12 @@ export class HtmlView extends TextFileView {
   private resizeHandle!: HTMLElement;
   private statusEl!: HTMLElement;
   private scriptToggleBtn!: HTMLElement;
-  private previewEditBtn!: HTMLElement;
+  private interactionBtns: Partial<Record<PreviewInteractionMode, HTMLElement>> = {};
+  private inspectorBar!: HTMLElement;
+  private inspectorSummaryEl!: HTMLElement;
+  private inspectorPathEl!: HTMLElement;
+  private locateSourceBtn!: HTMLElement;
+  private selectedPreview: PreviewElementInfo | null = null;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private previewSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private isDragging = false;
@@ -25,6 +53,8 @@ export class HtmlView extends TextFileView {
   private messageHandler: ((e: MessageEvent) => void) | null = null;
   /** 从预览反写 CM 时跳过 updateListener 里的「刷新 iframe」 */
   private pushingFromPreview = false;
+  /** 最近一次点击的编辑区：决定撤销/格式按钮作用在左侧还是预览 */
+  private lastEditTarget: HtmlEditTarget = "source";
 
   constructor(leaf: WorkspaceLeaf, plugin: HtmlEditorPlugin) {
     super(leaf);
@@ -63,14 +93,27 @@ export class HtmlView extends TextFileView {
     this.setupResize();
 
     this.previewPane = this.contentArea.createDiv("html-editor-preview-pane");
+    this.buildInspectorBar();
+    this.sourcePane.addEventListener("mousedown", () => {
+      this.lastEditTarget = "source";
+    });
+    this.previewPane.addEventListener("mousedown", () => {
+      this.lastEditTarget = "preview";
+    });
 
     if (this.currentMode === ViewMode.Preview) {
       this.resizeHandle.style.display = "none";
     }
 
     this.messageHandler = (e: MessageEvent) => {
+      if (e.data?.type === "html-editor-select") {
+        this.handlePreviewSelect(e.data as PreviewElementInfo);
+      }
       if (e.data?.type === "html-editor-locate-line" && typeof e.data.line === "number") {
         this.scrollToLine(e.data.line);
+      }
+      if (e.data?.type === "html-editor-dom-changed") {
+        this.schedulePreviewSyncFromIframe();
       }
     };
     window.addEventListener("message", this.messageHandler);
@@ -138,6 +181,15 @@ export class HtmlView extends TextFileView {
 
     this.toolbarEl.createDiv("toolbar-separator");
 
+    this.buildInteractionToolbar();
+
+    this.toolbarEl.createDiv("toolbar-separator");
+
+    const editRow = this.toolbarEl.createDiv("html-editor-toolbar-edit");
+    this.buildEditToolbar(editRow);
+
+    this.toolbarEl.createDiv("toolbar-separator");
+
     const refreshBtn = this.toolbarEl.createEl("button", { text: "Refresh" });
     refreshBtn.addEventListener("click", () => this.refreshPreview());
 
@@ -145,30 +197,6 @@ export class HtmlView extends TextFileView {
     openBtn.addEventListener("click", () => this.openInBrowser());
 
     this.toolbarEl.createDiv("toolbar-spacer");
-
-    this.previewEditBtn = this.toolbarEl.createEl("button", {
-      text: this.plugin.settings.previewEditable ? "预览编辑: ON" : "预览编辑: OFF",
-    });
-    if (this.plugin.settings.previewEditable) this.previewEditBtn.addClass("is-active");
-    this.previewEditBtn.setAttribute(
-      "title",
-      this.plugin.settings.previewEditable
-        ? "右侧可直接改文字；拖选文字可定位左侧；或 Alt+单击元素定位"
-        : "关闭后右侧只读；单击元素可跳到左侧对应行"
-    );
-    this.previewEditBtn.addEventListener("click", async () => {
-      this.plugin.settings.previewEditable = !this.plugin.settings.previewEditable;
-      await this.plugin.saveSettings();
-      this.previewEditBtn.textContent = this.plugin.settings.previewEditable ? "预览编辑: ON" : "预览编辑: OFF";
-      this.previewEditBtn.toggleClass("is-active", this.plugin.settings.previewEditable);
-      this.previewEditBtn.setAttribute(
-        "title",
-        this.plugin.settings.previewEditable
-          ? "右侧可直接改文字；拖选文字可定位左侧；或 Alt+单击元素定位"
-          : "关闭后右侧只读；单击元素可跳到左侧对应行"
-      );
-      this.refreshPreview();
-    });
 
     this.scriptToggleBtn = this.toolbarEl.createEl("button", {
       text: this.plugin.settings.allowScripts ? "JS: ON" : "JS: OFF",
@@ -188,6 +216,173 @@ export class HtmlView extends TextFileView {
 
     this.statusEl = this.toolbarEl.createDiv("toolbar-status");
     this.updateStatus();
+  }
+
+  private getEditContext(): HtmlEditContext {
+    return {
+      target: this.lastEditTarget,
+      previewEditable:
+        resolvePreviewInteractionMode(this.plugin.settings) === PreviewInteractionMode.Text,
+      cmView: this.cmView,
+      postPreviewCmd: (command, value) => this.postPreviewCmd(command, value),
+    };
+  }
+
+  private buildInteractionToolbar(): void {
+    const row = this.toolbarEl.createDiv("html-editor-toolbar-interaction");
+    const modes: { mode: PreviewInteractionMode; label: string; title: string }[] = [
+      {
+        mode: PreviewInteractionMode.Select,
+        label: "选择",
+        title: "悬停高亮；单击选中；同一位置连点可切换到更外层父元素",
+      },
+      {
+        mode: PreviewInteractionMode.Text,
+        label: "改文字",
+        title: "在预览中直接编辑文字（与选择/拖动互斥）",
+      },
+      {
+        mode: PreviewInteractionMode.Drag,
+        label: "拖动",
+        title: "拖动块级元素，会写入 position/transform",
+      },
+    ];
+    this.interactionBtns = {};
+    const current = resolvePreviewInteractionMode(this.plugin.settings);
+    for (const { mode, label, title } of modes) {
+      const btn = row.createEl("button", { text: label });
+      btn.setAttribute("title", title);
+      if (current === mode) btn.addClass("is-active");
+      btn.addEventListener("click", () => void this.setPreviewInteractionMode(mode));
+      this.interactionBtns[mode] = btn;
+    }
+  }
+
+  private async setPreviewInteractionMode(mode: PreviewInteractionMode): Promise<void> {
+    if (this.plugin.settings.previewInteractionMode === mode) return;
+    this.plugin.settings.previewInteractionMode = mode;
+    syncLegacyPreviewFlags(this.plugin.settings);
+    await this.plugin.saveSettings();
+    for (const [m, btn] of Object.entries(this.interactionBtns)) {
+      btn?.toggleClass("is-active", m === mode);
+    }
+    this.selectedPreview = null;
+    this.updateInspectorBar();
+    this.refreshPreview();
+  }
+
+  private buildInspectorBar(): void {
+    this.inspectorBar = this.previewPane.createDiv("html-editor-inspector");
+    this.inspectorSummaryEl = this.inspectorBar.createDiv("html-editor-inspector-summary");
+    this.inspectorPathEl = this.inspectorBar.createDiv("html-editor-inspector-path");
+    const actions = this.inspectorBar.createDiv("html-editor-inspector-actions");
+
+    this.locateSourceBtn = actions.createEl("button", { text: "定位源码" });
+    this.locateSourceBtn.setAttribute("title", "在左侧源码中滚动到该元素所在行");
+    this.locateSourceBtn.addEventListener("click", () => {
+      if (this.selectedPreview) this.scrollToLine(this.selectedPreview.line);
+    });
+
+    const parentBtn = actions.createEl("button", { text: "父级" });
+    parentBtn.setAttribute("title", "选中上一级带源码标记的元素");
+    parentBtn.addEventListener("click", () => this.postInspectorCmd("parent"));
+
+    const childBtn = actions.createEl("button", { text: "子级" });
+    childBtn.setAttribute("title", "选中第一个子元素");
+    childBtn.addEventListener("click", () => this.postInspectorCmd("child"));
+
+    const cycleBtn = actions.createEl("button", { text: "下一层" });
+    cycleBtn.setAttribute(
+      "title",
+      "在同一点击位置切换到更外层元素（等同在预览里连点）"
+    );
+    cycleBtn.addEventListener("click", () => this.postInspectorCmd("cycle"));
+
+    this.updateInspectorBar();
+  }
+
+  private postInspectorCmd(command: string): void {
+    this.previewFrame?.contentWindow?.postMessage(
+      { type: "html-editor-inspector-cmd", command },
+      "*"
+    );
+  }
+
+  private handlePreviewSelect(data: PreviewElementInfo): void {
+    this.selectedPreview = {
+      line: data.line,
+      tag: data.tag,
+      label: data.label,
+      path: data.path,
+      depth: data.depth,
+      depthTotal: data.depthTotal,
+    };
+    this.lastEditTarget = "preview";
+    this.updateInspectorBar();
+  }
+
+  private updateInspectorBar(): void {
+    if (!this.inspectorBar) return;
+    const mode = resolvePreviewInteractionMode(this.plugin.settings);
+    const show =
+      mode === PreviewInteractionMode.Select &&
+      this.selectedPreview !== null &&
+      (this.currentMode === ViewMode.Preview || this.currentMode === ViewMode.Split);
+    this.inspectorBar.style.display = show ? "" : "none";
+    if (!show || !this.selectedPreview) return;
+    const s = this.selectedPreview;
+    this.inspectorSummaryEl.setText(
+      `${s.label} · 源码第 ${s.line} 行 · 层级 ${s.depth + 1}/${s.depthTotal}`
+    );
+    this.inspectorPathEl.setText(s.path || s.label);
+  }
+
+  private postPreviewCmd(command: string, value?: string): void {
+    this.previewFrame?.contentWindow?.postMessage({ type: "html-editor-cmd", command, value }, "*");
+  }
+
+  /** 供命令面板调用 */
+  performUndo(): void {
+    editUndo(this.getEditContext());
+  }
+
+  performRedo(): void {
+    editRedo(this.getEditContext());
+  }
+
+  private buildEditToolbar(parent: HTMLElement): void {
+    const ctx = () => this.getEditContext();
+    const add = (label: string, title: string, run: () => void) => {
+      const btn = parent.createEl("button", { text: label });
+      btn.addClass("toolbar-edit-btn");
+      btn.setAttribute("title", title);
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        run();
+      });
+    };
+
+    add("撤销", "撤销（左侧 Ctrl+Z；改文字模式下需先点预览再撤销）", () => editUndo(ctx()));
+    add("重做", "重做（左侧 Ctrl+Shift+Z）", () => editRedo(ctx()));
+    parent.createDiv("toolbar-separator");
+
+    add("粗体", "粗体 <strong>", () => editBold(ctx()));
+    add("斜体", "斜体 <em>", () => editItalic(ctx()));
+    add("下划线", "下划线", () => editUnderline(ctx()));
+    add("删除线", "删除线", () => editStrike(ctx()));
+    add("清格式", "清除行内格式", () => editClearFormat(ctx()));
+    parent.createDiv("toolbar-separator");
+
+    add("链接", "插入/编辑链接", () => {
+      const url = window.prompt("链接 URL", "https://");
+      if (url) editLink(ctx(), url);
+    });
+    add("H2", "标题 <h2>", () => editInsertH2(ctx()));
+    add("段落", "段落 <p>", () => editInsertP(ctx()));
+    add("换行", "插入 <br>", () => editInsertBr(ctx()));
+    parent.createDiv("toolbar-separator");
+
+    add("删块", "删除当前块级元素（预览）或当前行（源码）", () => editDeleteBlock(ctx()));
   }
 
   switchMode(mode: ViewMode): void {
@@ -269,13 +464,18 @@ export class HtmlView extends TextFileView {
       this.previewFrame.remove();
       this.previewFrame = null;
     }
+    this.selectedPreview = null;
+    this.updateInspectorBar();
 
     let htmlToRender = content;
     if (!this.plugin.settings.allowScripts) {
       htmlToRender = this.stripScripts(content);
     }
 
-    const withLineTracking = this.injectLineTracking(htmlToRender, this.plugin.settings.previewEditable);
+    const withLineTracking = this.injectLineTracking(
+      htmlToRender,
+      resolvePreviewInteractionMode(this.plugin.settings)
+    );
 
     // 必须含 allow-scripts，否则 srcdoc 内注入的定位脚本无法执行（JS:OFF 时已先 strip 用户 script）
     const sandboxAttr = this.plugin.settings.allowScripts
@@ -300,13 +500,19 @@ export class HtmlView extends TextFileView {
     const doc = this.previewFrame?.contentDocument;
     if (!doc) return;
 
-    if (this.plugin.settings.previewEditable) {
+    if (resolvePreviewInteractionMode(this.plugin.settings) === PreviewInteractionMode.Text) {
       try {
         doc.designMode = "on";
       } catch {
         /* 部分沙箱环境可能禁止 */
       }
       doc.addEventListener("input", () => this.schedulePreviewSyncFromIframe());
+    } else {
+      try {
+        doc.designMode = "off";
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -340,6 +546,7 @@ export class HtmlView extends TextFileView {
     let html = doc.documentElement.outerHTML;
     html = html.replace(/<script[^>]*data-injected="html-editor"[\s\S]*?<\/script>/gi, "");
     html = html.replace(/\s*data-source-line="[^"]*"/gi, "");
+    html = html.replace(/\s*html-editor-(?:drag-active|drag-hover|hover|selected)/g, "");
     return html;
   }
 
@@ -347,7 +554,7 @@ export class HtmlView extends TextFileView {
     return html.replace(/<script[\s\S]*?<\/script>/gi, "");
   }
 
-  private injectLineTracking(source: string, previewEditable: boolean): string {
+  private injectLineTracking(source: string, interactionMode: PreviewInteractionMode): string {
     const lines = source.split("\n");
     const tagged: string[] = [];
 
@@ -365,47 +572,7 @@ export class HtmlView extends TextFileView {
       );
     }
 
-    const altGuard = previewEditable ? "if (!e.altKey) return;" : "";
-
-    const selectionLocate = previewEditable
-      ? `
-document.addEventListener('mouseup', function() {
-  var sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
-  var node = sel.anchorNode;
-  if (!node) return;
-  var el = node.nodeType === 1 ? node : node.parentElement;
-  while (el && el !== document.body && (!el.dataset || !el.dataset.sourceLine)) {
-    el = el.parentElement;
-  }
-  if (el && el.dataset && el.dataset.sourceLine) {
-    window.parent.postMessage({
-      type: 'html-editor-locate-line',
-      line: parseInt(el.dataset.sourceLine, 10)
-    }, '*');
-  }
-});
-`
-      : "";
-
-    const clickScript = `
-<script data-injected="html-editor">
-document.addEventListener('click', function(e) {
-  ${altGuard}
-  var el = e.target;
-  while (el && el !== document.body && !el.dataset.sourceLine) {
-    el = el.parentElement;
-  }
-  if (el && el.dataset && el.dataset.sourceLine) {
-    e.preventDefault();
-    window.parent.postMessage({
-      type: 'html-editor-locate-line',
-      line: parseInt(el.dataset.sourceLine, 10)
-    }, '*');
-  }
-}, true);
-${selectionLocate}
-</script>`;
+    const clickScript = buildPreviewInjectedScript(interactionMode);
 
     let result = tagged.join("\n");
 
@@ -424,6 +591,9 @@ ${selectionLocate}
     }
     if (!this.cmView) return;
     cmScrollToLine(this.cmView, line);
+    if (this.selectedPreview?.line === line) {
+      this.updateInspectorBar();
+    }
   }
 
   private async openInBrowser(): Promise<void> {

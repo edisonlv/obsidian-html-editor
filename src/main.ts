@@ -61,6 +61,30 @@ export default class HtmlEditorPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "undo",
+      name: "HTML Editor: Undo",
+      checkCallback: (checking: boolean) => {
+        const view = this.app.workspace.getActiveViewOfType(HtmlView);
+        if (!view) return false;
+        if (checking) return true;
+        view.performUndo();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "redo",
+      name: "HTML Editor: Redo",
+      checkCallback: (checking: boolean) => {
+        const view = this.app.workspace.getActiveViewOfType(HtmlView);
+        if (!view) return false;
+        if (checking) return true;
+        view.performRedo();
+        return true;
+      },
+    });
+
+    this.addCommand({
       id: "toggle-scripts",
       name: "Toggle JavaScript execution in preview",
       callback: async () => {

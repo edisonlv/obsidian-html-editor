@@ -9,6 +9,7 @@ export const STYLES = `
 /* ── Toolbar ── */
 .html-editor-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
@@ -16,6 +17,22 @@ export const STYLES = `
   background: var(--background-secondary);
   flex-shrink: 0;
   min-height: 36px;
+}
+
+.html-editor-toolbar-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 0 4px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.html-editor-toolbar button.toolbar-edit-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  min-height: 24px;
 }
 
 .html-editor-toolbar button {
@@ -61,6 +78,67 @@ export const STYLES = `
   color: var(--text-faint);
   padding: 0 8px;
   white-space: nowrap;
+}
+
+.html-editor-toolbar-interaction {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.html-editor-toolbar-interaction button {
+  min-width: 52px;
+}
+
+/* ── Preview inspector bar ── */
+.html-editor-inspector {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary-alt);
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.html-editor-inspector-summary {
+  font-weight: 600;
+  color: var(--text-normal);
+  flex: 0 1 auto;
+}
+
+.html-editor-inspector-path {
+  flex: 1 1 180px;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.html-editor-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.html-editor-inspector-actions button {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: none;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.html-editor-inspector-actions button:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
 }
 
 /* ── Content Area ── */
@@ -135,6 +213,13 @@ export const STYLES = `
   position: relative;
   min-width: 0;
   background: var(--background-primary);
+  display: flex;
+  flex-direction: column;
+}
+
+.html-editor-preview-pane iframe {
+  flex: 1;
+  min-height: 0;
 }
 
 .html-editor-preview-pane iframe {

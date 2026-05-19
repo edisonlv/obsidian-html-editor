@@ -1,4 +1,4 @@
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, indentWithTab, redo, undo } from "@codemirror/commands";
 import { bracketMatching, foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { html } from "@codemirror/lang-html";
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
@@ -108,6 +108,31 @@ export function createHtmlCodeMirror(parent: HTMLElement, opts: HtmlCodeMirrorOp
   return new EditorView({
     state,
     parent,
+  });
+}
+
+export function cmUndo(view: EditorView): boolean {
+  return undo(view);
+}
+
+export function cmRedo(view: EditorView): boolean {
+  return redo(view);
+}
+
+export function cmWrapSelection(view: EditorView, before: string, after: string): void {
+  const { from, to } = view.state.selection.main;
+  const selected = view.state.sliceDoc(from, to);
+  view.dispatch({
+    changes: { from, to, insert: `${before}${selected}${after}` },
+    selection: EditorSelection.cursor(from + before.length + selected.length),
+  });
+}
+
+export function cmInsertAtCursor(view: EditorView, text: string): void {
+  const { from, to } = view.state.selection.main;
+  view.dispatch({
+    changes: { from, to, insert: text },
+    selection: EditorSelection.cursor(from + text.length),
   });
 }
 
