@@ -10,11 +10,11 @@ import {
   editInsertH1,
   editInsertH2,
   editInsertH3,
-  editInsertImage,
+  editInsertHtmlSnippet,
+  editInsertLinkAdvanced,
   editInsertP,
   editInsertUl,
   editItalic,
-  editLink,
   editRedo,
   editStrike,
   editUnderline,
@@ -22,8 +22,12 @@ import {
   type HtmlEditContext,
   type HtmlEditTarget,
 } from "./htmlEditActions";
-import { cmLocateInSource, createHtmlCodeMirror } from "./htmlEditorCm";
+import { openDocumentMediaModal } from "./documentMediaModal";
+import { openInsertLinkModal } from "./insertLinkModal";
+import { openInsertMediaModal } from "./insertMediaModal";
+import { cmFindAndSelect, cmLocateInSource, createHtmlCodeMirror } from "./htmlEditorCm";
 import { buildSourceMapScript, injectSourceMarkers } from "./sourceMap";
+import { getPreviewBaseHref, injectPreviewBaseTag } from "./vaultResources";
 import { buildPreviewInjectedScript } from "./previewScripts";
 import {
   PreviewInteractionMode,
@@ -280,8 +284,9 @@ export class HtmlView extends TextFileView {
 
   private buildInspectorBar(): void {
     this.inspectorBar = this.previewPane.createDiv("html-editor-inspector");
-    this.inspectorSummaryEl = this.inspectorBar.createDiv("html-editor-inspector-summary");
-    this.inspectorPathEl = this.inspectorBar.createDiv("html-editor-inspector-path");
+    const info = this.inspectorBar.createDiv("html-editor-inspector-info");
+    this.inspectorSummaryEl = info.createDiv("html-editor-inspector-summary");
+    this.inspectorPathEl = info.createDiv("html-editor-inspector-path");
     const actions = this.inspectorBar.createDiv("html-editor-inspector-actions");
 
     this.locateSourceBtn = actions.createEl("button", { text: "定位源码" });
@@ -358,10 +363,12 @@ export class HtmlView extends TextFileView {
     this.inspectorBar.style.display = show ? "" : "none";
     if (!show || !this.selectedPreview) return;
     const s = this.selectedPreview;
-    this.inspectorSummaryEl.setText(
-      `${s.label} · 源码第 ${s.line} 行 · 层级 ${s.depth + 1}/${s.depthTotal}`
-    );
-    this.inspectorPathEl.setText(s.path || s.label);
+    const summary = `${s.label} · 源码第 ${s.line} 行 · 层级 ${s.depth + 1}/${s.depthTotal}`;
+    const path = s.path || s.label;
+    this.inspectorSummaryEl.setText(summary);
+    this.inspectorPathEl.setText(path);
+    this.inspectorSummaryEl.setAttr("title", summary);
+    this.inspectorPathEl.setAttr("title", path);
   }
 
   private postPreviewCmd(command: string, value?: string): void {
@@ -385,7 +392,13 @@ export class HtmlView extends TextFileView {
       btn.setAttribute("title", title);
       btn.addEventListener("click", (e) => {
         e.preventDefault();
-        run();
+        e.stopPropagation();
+        try {
+          run();
+        } catch (err) {
+          console.error("[obsidian-html-editor] toolbar action failed:", err);
+          new Notice("操作失败，请查看开发者控制台");
+        }
       });
     };
 
@@ -400,10 +413,9 @@ export class HtmlView extends TextFileView {
     add("清格式", "清除行内格式", () => editClearFormat(ctx()));
     parent.createDiv("toolbar-separator");
 
-    add("链接", "插入/编辑链接", () => {
-      const url = window.prompt("链接 URL", "https://");
-      if (url) editLink(ctx(), url);
-    });
+    add("链接", "网页 / 库内文件 / 页内锚点", () => this.openLinkDialog());
+    add("媒体", "插入图片、视频或音频（网址或库内文件）", () => this.openMediaDialog());
+    add("本文媒体", "查看并复制当前 HTML 中的媒体路径", () => this.openDocumentMediaList());
     add("H1", "标题 <h1>", () => editInsertH1(ctx()));
     add("H2", "标题 <h2>", () => editInsertH2(ctx()));
     add("H3", "标题 <h3>", () => editInsertH3(ctx()));
@@ -412,13 +424,39 @@ export class HtmlView extends TextFileView {
     add("引用", "引用 <blockquote>", () => editInsertBlockquote(ctx()));
     add("代码", "行内 <code>", () => editInsertCode(ctx()));
     add("换行", "插入 <br>", () => editInsertBr(ctx()));
-    add("图片", "插入 <img>", () => {
-      const url = window.prompt("图片 URL", "https://");
-      if (url) editInsertImage(ctx(), url);
-    });
     parent.createDiv("toolbar-separator");
 
     add("删块", "删除当前块级元素（预览）或当前行（源码）", () => editDeleteBlock(ctx()));
+  }
+
+  private openLinkDialog(): void {
+    const cm = this.cmView;
+    const defaultText = cm
+      ? cm.state.sliceDoc(cm.state.selection.main.from, cm.state.selection.main.to)
+      : "";
+    openInsertLinkModal(this.app, this.file, defaultText, (result) => {
+      editInsertLinkAdvanced(this.getEditContext(), result);
+    });
+  }
+
+  private openMediaDialog(): void {
+    openInsertMediaModal(this.app, this.file, (result) => {
+      editInsertHtmlSnippet(this.getEditContext(), result.html);
+    });
+  }
+
+  private openDocumentMediaList(): void {
+    openDocumentMediaModal(
+      this.app,
+      this.file,
+      () => this.data ?? "",
+      (src) => {
+        if (this.currentMode === ViewMode.Preview) this.switchMode(ViewMode.Split);
+        if (this.cmView && !cmFindAndSelect(this.cmView, src)) {
+          new Notice("源码中未找到该路径");
+        }
+      }
+    );
   }
 
   switchMode(mode: ViewMode): void {
@@ -508,10 +546,17 @@ export class HtmlView extends TextFileView {
       htmlToRender = this.stripScripts(content);
     }
 
-    const withLineTracking = this.injectLineTracking(
+    let withLineTracking = this.injectLineTracking(
       htmlToRender,
       resolvePreviewInteractionMode(this.plugin.settings)
     );
+
+    if (this.file) {
+      const baseHref = getPreviewBaseHref(this.app, this.file);
+      if (baseHref) {
+        withLineTracking = injectPreviewBaseTag(withLineTracking, baseHref);
+      }
+    }
 
     // 必须含 allow-scripts，否则 srcdoc 内注入的定位脚本无法执行（JS:OFF 时已先 strip 用户 script）
     const sandboxAttr = this.plugin.settings.allowScripts

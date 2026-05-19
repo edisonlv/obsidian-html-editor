@@ -1,5 +1,7 @@
 import type { EditorView } from "@codemirror/view";
 import { cmInsertAtCursor, cmUndo, cmRedo, cmWrapSelection } from "./htmlEditorCm";
+import { escapeHtmlAttr } from "./vaultResources";
+import type { InsertLinkResult } from "./insertLinkModal";
 
 export type HtmlEditTarget = "source" | "preview";
 
@@ -83,19 +85,33 @@ export function editClearFormat(ctx: HtmlEditContext): void {
 }
 
 export function editLink(ctx: HtmlEditContext, url: string): void {
-  const safe = url.replace(/"/g, "&quot;");
+  editInsertLinkAdvanced(ctx, { href: url, newTab: /^https?:/i.test(url) });
+}
+
+export function editInsertLinkAdvanced(ctx: HtmlEditContext, result: InsertLinkResult): void {
+  const href = escapeHtmlAttr(result.href);
+  const target = result.newTab ? ' target="_blank" rel="noopener noreferrer"' : "";
+
   if (usePreview(ctx)) {
-    ctx.postPreviewCmd("createLink", url);
+    ctx.postPreviewCmd("createLink", result.href);
     return;
   }
   if (ctx.cmView) {
     const { from, to } = ctx.cmView.state.selection.main;
-    const label = ctx.cmView.state.sliceDoc(from, to) || "链接";
-    const html = `<a href="${safe}">${label}</a>`;
-    ctx.cmView.dispatch({
-      changes: { from, to, insert: html },
-    });
+    const rawLabel = result.text ?? (ctx.cmView.state.sliceDoc(from, to) || result.href);
+    const label = rawLabel.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const html = `<a href="${href}"${target}>${label}</a>`;
+    ctx.cmView.dispatch({ changes: { from, to, insert: html } });
   }
+}
+
+/** 插入任意 HTML 片段（图片/视频/音频等） */
+export function editInsertHtmlSnippet(ctx: HtmlEditContext, html: string): void {
+  if (usePreview(ctx)) {
+    ctx.postPreviewCmd("insertHTML", html);
+    return;
+  }
+  if (ctx.cmView) cmInsertAtCursor(ctx.cmView, html);
 }
 
 export function editInsertBr(ctx: HtmlEditContext): void {
@@ -163,13 +179,8 @@ export function editInsertCode(ctx: HtmlEditContext): void {
 }
 
 export function editInsertImage(ctx: HtmlEditContext, url: string): void {
-  const safe = url.replace(/"/g, "&quot;");
-  const html = `<img src="${safe}" alt="" />`;
-  if (usePreview(ctx)) {
-    ctx.postPreviewCmd("insertHTML", html);
-    return;
-  }
-  if (ctx.cmView) cmInsertAtCursor(ctx.cmView, html);
+  const safe = escapeHtmlAttr(url);
+  editInsertHtmlSnippet(ctx, `<img src="${safe}" alt="" />`);
 }
 
 export function editDeleteBlock(ctx: HtmlEditContext): void {

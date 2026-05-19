@@ -1,7 +1,7 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab, redo, undo } from "@codemirror/commands";
 import { bracketMatching, foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { html } from "@codemirror/lang-html";
-import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { highlightSelectionMatches, searchKeymap, SearchQuery, setSearchQuery } from "@codemirror/search";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import {
   crosshairCursor,
@@ -191,4 +191,22 @@ export function cmLocateInSource(view: EditorView, loc: SourceLocateTarget): voi
     effects: EditorView.scrollIntoView(from, { y: "center" }),
   });
   view.focus();
+}
+
+/** 在源码中查找字符串并选中第一处 */
+export function cmFindAndSelect(view: EditorView, needle: string): boolean {
+  if (!needle) return false;
+  const doc = view.state.doc.toString();
+  const idx = doc.indexOf(needle);
+  if (idx < 0) return false;
+  const to = idx + needle.length;
+  view.dispatch({
+    selection: EditorSelection.range(idx, to),
+    effects: [
+      EditorView.scrollIntoView(idx, { y: "center" }),
+      setSearchQuery.of(new SearchQuery({ search: needle })),
+    ],
+  });
+  view.focus();
+  return true;
 }

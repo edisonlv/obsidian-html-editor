@@ -80,6 +80,41 @@ export const STYLES = `
   white-space: nowrap;
 }
 
+.html-editor-modal-input {
+  width: 100%;
+  min-width: 220px;
+}
+
+.html-editor-modal-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+
+.html-editor-media-list {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.html-editor-media-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.html-editor-media-row code.html-editor-media-src {
+  font-size: 11px;
+  word-break: break-all;
+  display: block;
+  margin: 4px 0;
+}
+
+.html-editor-media-kind {
+  font-size: 11px;
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
 .html-editor-toolbar-interaction {
   display: flex;
   align-items: center;
@@ -90,38 +125,57 @@ export const STYLES = `
   min-width: 52px;
 }
 
-/* ── Preview inspector bar ── */
+/* ── Preview inspector bar（固定高度，避免长路径换行顶动预览） ── */
 .html-editor-inspector {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-secondary-alt);
   flex-shrink: 0;
+  flex-grow: 0;
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+  box-sizing: border-box;
   font-size: 11px;
+  overflow: hidden;
+}
+
+.html-editor-inspector-info {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
 }
 
 .html-editor-inspector-summary {
   font-weight: 600;
   color: var(--text-normal);
-  flex: 0 1 auto;
-}
-
-.html-editor-inspector-path {
-  flex: 1 1 180px;
-  color: var(--text-muted);
-  font-family: var(--font-monospace);
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+}
+
+.html-editor-inspector-path {
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .html-editor-inspector-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 4px;
   flex-shrink: 0;
 }
