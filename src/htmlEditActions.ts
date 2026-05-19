@@ -114,12 +114,62 @@ export function editInsertP(ctx: HtmlEditContext): void {
   if (ctx.cmView) cmWrapSelection(ctx.cmView, "<p>", "</p>");
 }
 
+export function editInsertH1(ctx: HtmlEditContext): void {
+  if (usePreview(ctx)) {
+    ctx.postPreviewCmd("wrapTag", "<h1>|</h1>");
+    return;
+  }
+  if (ctx.cmView) cmWrapSelection(ctx.cmView, "<h1>", "</h1>");
+}
+
 export function editInsertH2(ctx: HtmlEditContext): void {
   if (usePreview(ctx)) {
     ctx.postPreviewCmd("wrapTag", "<h2>|</h2>");
     return;
   }
   if (ctx.cmView) cmWrapSelection(ctx.cmView, "<h2>", "</h2>");
+}
+
+export function editInsertH3(ctx: HtmlEditContext): void {
+  if (usePreview(ctx)) {
+    ctx.postPreviewCmd("wrapTag", "<h3>|</h3>");
+    return;
+  }
+  if (ctx.cmView) cmWrapSelection(ctx.cmView, "<h3>", "</h3>");
+}
+
+export function editInsertUl(ctx: HtmlEditContext): void {
+  if (usePreview(ctx)) {
+    ctx.postPreviewCmd("wrapTag", "<ul><li>|</li></ul>");
+    return;
+  }
+  if (ctx.cmView) cmWrapSelection(ctx.cmView, "<ul><li>", "</li></ul>");
+}
+
+export function editInsertBlockquote(ctx: HtmlEditContext): void {
+  if (usePreview(ctx)) {
+    ctx.postPreviewCmd("wrapTag", "<blockquote><p>|</p></blockquote>");
+    return;
+  }
+  if (ctx.cmView) cmWrapSelection(ctx.cmView, "<blockquote><p>", "</p></blockquote>");
+}
+
+export function editInsertCode(ctx: HtmlEditContext): void {
+  if (usePreview(ctx)) {
+    ctx.postPreviewCmd("wrapTag", "<code>|</code>");
+    return;
+  }
+  if (ctx.cmView) cmWrapSelection(ctx.cmView, "<code>", "</code>");
+}
+
+export function editInsertImage(ctx: HtmlEditContext, url: string): void {
+  const safe = url.replace(/"/g, "&quot;");
+  const html = `<img src="${safe}" alt="" />`;
+  if (usePreview(ctx)) {
+    ctx.postPreviewCmd("insertHTML", html);
+    return;
+  }
+  if (ctx.cmView) cmInsertAtCursor(ctx.cmView, html);
 }
 
 export function editDeleteBlock(ctx: HtmlEditContext): void {

@@ -137,12 +137,58 @@ export function cmInsertAtCursor(view: EditorView, text: string): void {
 }
 
 export function cmScrollToLine(view: EditorView, line1: number): void {
+  cmLocateInSource(view, { line: line1 });
+}
+
+export interface SourceLocateTarget {
+  line: number;
+  tag?: string;
+  from?: number;
+  to?: number;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 在源码中选中对应起始标签（优先用精确偏移，否则按行+标签名匹配） */
+export function cmLocateInSource(view: EditorView, loc: SourceLocateTarget): void {
   const doc = view.state.doc;
-  if (line1 < 1 || line1 > doc.lines) return;
-  const line = doc.line(line1);
+  let from: number;
+  let to: number;
+
+  if (
+    typeof loc.from === "number" &&
+    typeof loc.to === "number" &&
+    loc.from >= 0 &&
+    loc.to > loc.from &&
+    loc.from < doc.length
+  ) {
+    from = loc.from;
+    to = Math.min(doc.length, loc.to);
+  } else {
+    const lineNo = Math.max(1, Math.min(loc.line, doc.lines));
+    const line = doc.line(lineNo);
+    if (loc.tag) {
+      const re = new RegExp(`<${escapeRegExp(loc.tag)}(?:[\\s/>]|$)`, "i");
+      const m = line.text.match(re);
+      if (m && m.index !== undefined) {
+        from = line.from + m.index;
+        const gt = line.text.indexOf(">", m.index);
+        to = gt >= 0 ? line.from + gt + 1 : from + m[0].length;
+      } else {
+        from = line.from;
+        to = Math.min(line.to, from + 1);
+      }
+    } else {
+      from = line.from;
+      to = Math.min(line.to, from + 1);
+    }
+  }
+
   view.dispatch({
-    selection: EditorSelection.cursor(line.from),
-    effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+    selection: EditorSelection.range(from, to),
+    effects: EditorView.scrollIntoView(from, { y: "center" }),
   });
   view.focus();
 }

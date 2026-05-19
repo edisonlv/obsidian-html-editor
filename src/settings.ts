@@ -15,6 +15,8 @@ export interface HtmlEditorSettings {
   lineNumbers: boolean;
   autoRefresh: boolean;
   refreshDelay: number;
+  /** 预览点选元素后自动在左侧选中对应起始标签 */
+  autoLocateOnSelect: boolean;
 }
 
 export const DEFAULT_SETTINGS: HtmlEditorSettings = {
@@ -28,6 +30,7 @@ export const DEFAULT_SETTINGS: HtmlEditorSettings = {
   lineNumbers: true,
   autoRefresh: true,
   refreshDelay: 500,
+  autoLocateOnSelect: true,
 };
 
 export function resolvePreviewInteractionMode(s: HtmlEditorSettings): PreviewInteractionMode {
@@ -59,6 +62,9 @@ export function sanitizeHtmlEditorSettings(raw: unknown): HtmlEditorSettings {
     base.refreshDelay = DEFAULT_SETTINGS.refreshDelay;
   }
   base.refreshDelay = Math.min(5000, Math.max(50, Math.round(base.refreshDelay)));
+  if (typeof base.autoLocateOnSelect !== "boolean") {
+    base.autoLocateOnSelect = DEFAULT_SETTINGS.autoLocateOnSelect;
+  }
 
   const validInteraction = (m: unknown): m is PreviewInteractionMode =>
     m === PreviewInteractionMode.Select ||
@@ -178,6 +184,18 @@ export class HtmlEditorSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
             this.plugin.rebuildAllHtmlEditorChrome();
           })
+      );
+
+    new Setting(containerEl)
+      .setName("Auto locate in source")
+      .setDesc(
+        "在「选择」模式下单击元素，或在「改文字」模式下 Alt+单击时，自动在左侧源码中选中对应起始标签"
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.autoLocateOnSelect).onChange(async (value) => {
+          this.plugin.settings.autoLocateOnSelect = value;
+          await this.plugin.saveSettings();
+        })
       );
 
     new Setting(containerEl)

@@ -25,4 +25,9 @@ export interface PreviewElementInfo {
   label: string;
   depth: number;
   depthTotal: number;
+  /** 与 injectSourceMarkers 生成的表一致 */
+  sourceId?: number;
+  /** 源码中起始标签字节范围（含 `<...>`） */
+  from?: number;
+  to?: number;
 }

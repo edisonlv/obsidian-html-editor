@@ -4,9 +4,15 @@ import {
   editBold,
   editClearFormat,
   editDeleteBlock,
+  editInsertBlockquote,
   editInsertBr,
+  editInsertCode,
+  editInsertH1,
   editInsertH2,
+  editInsertH3,
+  editInsertImage,
   editInsertP,
+  editInsertUl,
   editItalic,
   editLink,
   editRedo,
@@ -16,7 +22,8 @@ import {
   type HtmlEditContext,
   type HtmlEditTarget,
 } from "./htmlEditActions";
-import { cmScrollToLine, createHtmlCodeMirror } from "./htmlEditorCm";
+import { cmLocateInSource, createHtmlCodeMirror } from "./htmlEditorCm";
+import { buildSourceMapScript, injectSourceMarkers } from "./sourceMap";
 import { buildPreviewInjectedScript } from "./previewScripts";
 import {
   PreviewInteractionMode,
@@ -234,12 +241,12 @@ export class HtmlView extends TextFileView {
       {
         mode: PreviewInteractionMode.Select,
         label: "选择",
-        title: "悬停高亮；单击选中；同一位置连点可切换到更外层父元素",
+        title: "悬停高亮；单击选中最内层；同位置连点或「下一层」切外层；Shift+单击直接选最外层",
       },
       {
         mode: PreviewInteractionMode.Text,
         label: "改文字",
-        title: "在预览中直接编辑文字（与选择/拖动互斥）",
+        title: "在预览中直接编辑文字；Alt+单击（Shift=选外层）可定位左侧源码",
       },
       {
         mode: PreviewInteractionMode.Drag,
@@ -278,9 +285,9 @@ export class HtmlView extends TextFileView {
     const actions = this.inspectorBar.createDiv("html-editor-inspector-actions");
 
     this.locateSourceBtn = actions.createEl("button", { text: "定位源码" });
-    this.locateSourceBtn.setAttribute("title", "在左侧源码中滚动到该元素所在行");
+    this.locateSourceBtn.setAttribute("title", "在左侧源码中选中该元素的起始标签");
     this.locateSourceBtn.addEventListener("click", () => {
-      if (this.selectedPreview) this.scrollToLine(this.selectedPreview.line);
+      if (this.selectedPreview) this.locateSelectedInSource();
     });
 
     const parentBtn = actions.createEl("button", { text: "父级" });
@@ -316,9 +323,29 @@ export class HtmlView extends TextFileView {
       path: data.path,
       depth: data.depth,
       depthTotal: data.depthTotal,
+      sourceId: data.sourceId,
+      from: data.from,
+      to: data.to,
     };
     this.lastEditTarget = "preview";
     this.updateInspectorBar();
+    if (this.plugin.settings.autoLocateOnSelect) {
+      this.locateSelectedInSource();
+    }
+  }
+
+  private locateSelectedInSource(): void {
+    const s = this.selectedPreview;
+    if (!s || !this.cmView) return;
+    if (this.currentMode === ViewMode.Preview) {
+      this.switchMode(ViewMode.Split);
+    }
+    cmLocateInSource(this.cmView, {
+      line: s.line,
+      tag: s.tag,
+      from: s.from,
+      to: s.to,
+    });
   }
 
   private updateInspectorBar(): void {
@@ -377,9 +404,18 @@ export class HtmlView extends TextFileView {
       const url = window.prompt("链接 URL", "https://");
       if (url) editLink(ctx(), url);
     });
+    add("H1", "标题 <h1>", () => editInsertH1(ctx()));
     add("H2", "标题 <h2>", () => editInsertH2(ctx()));
+    add("H3", "标题 <h3>", () => editInsertH3(ctx()));
     add("段落", "段落 <p>", () => editInsertP(ctx()));
+    add("列表", "无序列表 <ul><li>", () => editInsertUl(ctx()));
+    add("引用", "引用 <blockquote>", () => editInsertBlockquote(ctx()));
+    add("代码", "行内 <code>", () => editInsertCode(ctx()));
     add("换行", "插入 <br>", () => editInsertBr(ctx()));
+    add("图片", "插入 <img>", () => {
+      const url = window.prompt("图片 URL", "https://");
+      if (url) editInsertImage(ctx(), url);
+    });
     parent.createDiv("toolbar-separator");
 
     add("删块", "删除当前块级元素（预览）或当前行（源码）", () => editDeleteBlock(ctx()));
@@ -544,8 +580,9 @@ export class HtmlView extends TextFileView {
 
   private serializePreviewDocument(doc: Document): string {
     let html = doc.documentElement.outerHTML;
+    html = html.replace(/<script[^>]*data-injected="html-editor-map"[^>]*>[\s\S]*?<\/script>/gi, "");
     html = html.replace(/<script[^>]*data-injected="html-editor"[\s\S]*?<\/script>/gi, "");
-    html = html.replace(/\s*data-source-line="[^"]*"/gi, "");
+    html = html.replace(/\s*data-source-(?:id|line)="[^"]*"/gi, "");
     html = html.replace(/\s*html-editor-(?:drag-active|drag-hover|hover|selected)/g, "");
     return html;
   }
@@ -555,34 +592,14 @@ export class HtmlView extends TextFileView {
   }
 
   private injectLineTracking(source: string, interactionMode: PreviewInteractionMode): string {
-    const lines = source.split("\n");
-    const tagged: string[] = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      tagged.push(
-        lines[i].replace(
-          /<([a-zA-Z][a-zA-Z0-9]*)([\s>\/])/g,
-          (match, tag, after) => {
-            if (tag.toLowerCase() === "script" || tag.toLowerCase() === "style" || tag.toLowerCase() === "!doctype") {
-              return match;
-            }
-            return `<${tag} data-source-line="${i + 1}"${after}`;
-          }
-        )
-      );
-    }
-
+    const { html: marked, map } = injectSourceMarkers(source);
     const clickScript = buildPreviewInjectedScript(interactionMode);
+    const inject = buildSourceMapScript(map) + "\n" + clickScript;
 
-    let result = tagged.join("\n");
-
-    if (result.includes("</body>")) {
-      result = result.replace("</body>", clickScript + "\n</body>");
-    } else {
-      result += "\n" + clickScript;
+    if (marked.includes("</body>")) {
+      return marked.replace("</body>", inject + "\n</body>");
     }
-
-    return result;
+    return marked + "\n" + inject;
   }
 
   private scrollToLine(line: number): void {
@@ -590,10 +607,7 @@ export class HtmlView extends TextFileView {
       this.switchMode(ViewMode.Split);
     }
     if (!this.cmView) return;
-    cmScrollToLine(this.cmView, line);
-    if (this.selectedPreview?.line === line) {
-      this.updateInspectorBar();
-    }
+    cmLocateInSource(this.cmView, { line });
   }
 
   private async openInBrowser(): Promise<void> {

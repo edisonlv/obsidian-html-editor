@@ -18,8 +18,14 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
   }
 
   function __heHasLine(el) {
-    return el && el.dataset && el.dataset.sourceLine;
+    return el && el.dataset && (el.dataset.sourceId != null || el.dataset.sourceLine);
   }
+
+  var __heMap = [];
+  try {
+    var __heMapEl = document.querySelector('script[data-injected="html-editor-map"]');
+    if (__heMapEl && __heMapEl.textContent) __heMap = JSON.parse(__heMapEl.textContent);
+  } catch (e) { __heMap = []; }
 
   function __heStackAt(x, y) {
     var list = document.elementsFromPoint(x, y);
@@ -56,15 +62,26 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
   }
 
   function __hePostSelect(el, depth, depthTotal) {
+    var sid = el.dataset.sourceId != null ? parseInt(el.dataset.sourceId, 10) : -1;
+    var entry = sid >= 0 && __heMap[sid] ? __heMap[sid] : null;
     window.parent.postMessage({
       type: 'html-editor-select',
-      line: parseInt(el.dataset.sourceLine, 10),
+      line: entry ? entry.line : parseInt(el.dataset.sourceLine, 10),
+      sourceId: sid >= 0 ? sid : undefined,
+      from: entry ? entry.from : undefined,
+      to: entry ? entry.to : undefined,
       tag: el.tagName.toLowerCase(),
       label: __heDescribe(el),
       path: __hePath(el),
       depth: depth,
       depthTotal: depthTotal
     }, '*');
+  }
+
+  function __hePickAt(x, y, preferOuter) {
+    var stack = __heStackAt(x, y);
+    if (!stack.length) return null;
+    return preferOuter ? stack[stack.length - 1] : stack[0];
   }
 
   var hoverEl = null;
@@ -104,7 +121,7 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     hoverEl = el;
     if (el && el !== selectedEl) {
       el.classList.add('html-editor-hover');
-      labelEl.textContent = __heDescribe(el) + ' · L' + el.dataset.sourceLine;
+      labelEl.textContent = __heDescribe(el) + ' · L' + (el.dataset.sourceLine || '?');
       var r = el.getBoundingClientRect();
       labelEl.style.left = Math.max(4, r.left) + 'px';
       labelEl.style.top = Math.max(4, r.top - 22) + 'px';
@@ -120,7 +137,7 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     if (el) {
       el.classList.add('html-editor-selected');
       __hePostSelect(el, depth, depthTotal);
-      labelEl.textContent = __heDescribe(el) + ' · L' + el.dataset.sourceLine + ' · 层 ' + (depth + 1) + '/' + depthTotal;
+      labelEl.textContent = __heDescribe(el) + ' · L' + (el.dataset.sourceLine || '?') + ' · 层 ' + (depth + 1) + '/' + depthTotal + ' · 连点切层';
       var r = el.getBoundingClientRect();
       labelEl.style.left = Math.max(4, r.left) + 'px';
       labelEl.style.top = Math.max(4, r.top - 22) + 'px';
@@ -140,8 +157,10 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     var stack = __heStackAt(e.clientX, e.clientY);
     if (!stack.length) return;
     var now = Date.now();
-    var sameSpot = Math.abs(e.clientX - lastClickX) < 6 && Math.abs(e.clientY - lastClickY) < 6 && (now - lastClickT) < 500;
-    if (sameSpot && lastStack.length === stack.length) {
+    var sameSpot = Math.abs(e.clientX - lastClickX) < 6 && Math.abs(e.clientY - lastClickY) < 6 && (now - lastClickT) < 600;
+    if (e.shiftKey) {
+      cycleIdx = stack.length - 1;
+    } else if (sameSpot && lastStack.length === stack.length) {
       cycleIdx = (cycleIdx + 1) % stack.length;
     } else {
       cycleIdx = 0;
@@ -154,6 +173,17 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     e.preventDefault();
     e.stopPropagation();
     setSelected(el, cycleIdx, stack.length);
+  }, true);
+  ` : ""}
+
+  ${isText ? `
+  document.addEventListener('click', function(e) {
+    if (!e.altKey || window.__htmlEditorDragging) return;
+    var el = __hePickAt(e.clientX, e.clientY, e.shiftKey);
+    if (!el) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setSelected(el, 0, 1);
   }, true);
   ` : ""}
 
