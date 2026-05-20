@@ -1,6 +1,6 @@
 {
   "name": "obsidian-html-editor",
-  "version": "1.7.3",
+  "version": "1.8.2",
   "description": "View and edit HTML in Obsidian with CodeMirror, live preview, and optional WYSIWYG in preview",
   "main": "main.js",
   "scripts": {

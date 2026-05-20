@@ -35,7 +35,6 @@ import { buildPreviewInjectedScript } from "./previewScripts";
 import {
   INSERT_POSITION_LABELS,
   modeIsLayout,
-  modeShowsInspector,
   PreviewInteractionMode,
   suggestInsertBlockPosition,
   VIEW_TYPE_HTML,
@@ -56,14 +55,22 @@ export class HtmlView extends TextFileView {
   private cmView: EditorView | null = null;
   private editorWrapEl!: HTMLElement;
   private previewFrame: HTMLIFrameElement | null = null;
+  private previewWorkspaceEl!: HTMLElement;
+  private previewCanvasWrapEl!: HTMLElement;
+  private inspectorFloatEl!: HTMLElement;
   private toolbarEl!: HTMLElement;
+  private toolbarToolsEl!: HTMLElement;
+  private toolsToggleBtn!: HTMLElement;
+  private toolsExpanded = false;
   private contentArea!: HTMLElement;
   private resizeHandle!: HTMLElement;
   private statusEl!: HTMLElement;
   private scriptToggleBtn!: HTMLElement;
   private interactionBtns: Partial<Record<PreviewInteractionMode, HTMLElement>> = {};
   private inspectorBar!: HTMLElement;
+  private inspectorModuleEl!: HTMLElement;
   private inspectorSummaryEl!: HTMLElement;
+  private inspectorMetaEl!: HTMLElement;
   private inspectorPathEl!: HTMLElement;
   private insertHintBar!: HTMLElement;
   private insertHintEl!: HTMLElement;
@@ -122,7 +129,7 @@ export class HtmlView extends TextFileView {
     this.setupResize();
 
     this.previewPane = this.contentArea.createDiv("html-editor-preview-pane");
-    this.buildInspectorBar();
+    this.setupPreviewWorkspace();
     this.sourcePane.addEventListener("mousedown", () => {
       this.lastEditTarget = "source";
     });
@@ -210,65 +217,89 @@ export class HtmlView extends TextFileView {
 
   private buildToolbar(): void {
     this.toolbarEl.empty();
+    this.toolbarEl.addClass("html-editor-compact-toolbar");
 
+    const bar = this.toolbarEl.createDiv("html-editor-toolbar-bar");
+
+    const viewSeg = bar.createDiv("html-editor-view-mode-segment");
     const modes: { mode: ViewMode; label: string; title?: string }[] = [
-      { mode: ViewMode.Preview, label: "Preview", title: "仅预览（可点选定位源码）" },
+      { mode: ViewMode.Preview, label: "预览", title: "仅预览（可点选定位源码）" },
       {
         mode: ViewMode.Canvas,
         label: "画布",
         title: "仅页面编辑：不显示源码、不跳转代码",
       },
-      { mode: ViewMode.Source, label: "Source" },
-      { mode: ViewMode.Split, label: "Split" },
+      { mode: ViewMode.Source, label: "源码" },
+      { mode: ViewMode.Split, label: "分栏" },
     ];
-
     for (const { mode, label, title } of modes) {
-      const btn = this.toolbarEl.createEl("button", { text: label });
+      const btn = viewSeg.createEl("button", { text: label });
+      btn.addClass("html-editor-view-mode-btn");
       if (title) btn.setAttribute("title", title);
       if (this.currentMode === mode) btn.addClass("is-active");
       btn.addEventListener("click", () => this.switchMode(mode));
     }
 
-    this.toolbarEl.createDiv("toolbar-separator");
+    bar.createDiv("html-editor-toolbar-divider");
 
-    this.buildInteractionToolbar();
+    this.buildInteractionToolbar(bar);
 
-    this.toolbarEl.createDiv("toolbar-separator");
+    bar.createDiv("html-editor-toolbar-spacer");
 
-    const editRow = this.toolbarEl.createDiv("html-editor-toolbar-edit");
-    this.buildEditToolbar(editRow);
+    this.toolsToggleBtn = bar.createEl("button", { text: "工具 ▾" });
+    this.toolsToggleBtn.addClass("html-editor-tools-toggle");
+    this.toolsToggleBtn.setAttribute("title", "展开或收起编辑与原型工具");
+    this.toolsToggleBtn.addEventListener("click", () => this.toggleToolsPanel());
 
-    const protoRow = this.toolbarEl.createDiv("html-editor-toolbar-prototype");
-    this.buildPrototypeToolbar(protoRow);
-
-    this.toolbarEl.createDiv("toolbar-separator");
-
-    const refreshBtn = this.toolbarEl.createEl("button", { text: "Refresh" });
+    const refreshBtn = bar.createEl("button", { text: "刷新" });
+    refreshBtn.addClass("html-editor-ghost-btn");
+    refreshBtn.setAttribute("title", "刷新预览");
     refreshBtn.addEventListener("click", () => this.refreshPreview());
 
-    const openBtn = this.toolbarEl.createEl("button", { text: "Open in Browser" });
+    const openBtn = bar.createEl("button", { text: "浏览器" });
+    openBtn.addClass("html-editor-ghost-btn");
+    openBtn.setAttribute("title", "在系统浏览器中打开");
     openBtn.addEventListener("click", () => this.openInBrowser());
 
-    this.toolbarEl.createDiv("toolbar-spacer");
-
-    this.scriptToggleBtn = this.toolbarEl.createEl("button", {
-      text: this.plugin.settings.allowScripts ? "JS: ON" : "JS: OFF",
+    this.scriptToggleBtn = bar.createEl("button", {
+      text: this.plugin.settings.allowScripts ? "JS" : "JS×",
     });
+    this.scriptToggleBtn.addClass("html-editor-script-toggle");
+    this.scriptToggleBtn.setAttribute("title", "允许预览内执行脚本");
     if (this.plugin.settings.allowScripts) {
       this.scriptToggleBtn.addClass("is-active");
     }
     this.scriptToggleBtn.addEventListener("click", async () => {
       this.plugin.settings.allowScripts = !this.plugin.settings.allowScripts;
       await this.plugin.saveSettings();
-      this.scriptToggleBtn.textContent = this.plugin.settings.allowScripts ? "JS: ON" : "JS: OFF";
+      this.scriptToggleBtn.textContent = this.plugin.settings.allowScripts ? "JS" : "JS×";
       this.scriptToggleBtn.toggleClass("is-active", this.plugin.settings.allowScripts);
       this.refreshPreview();
     });
 
-    this.toolbarEl.createDiv("toolbar-separator");
-
-    this.statusEl = this.toolbarEl.createDiv("toolbar-status");
+    this.statusEl = bar.createDiv("html-editor-toolbar-status");
     this.updateStatus();
+
+    this.toolbarToolsEl = this.toolbarEl.createDiv("html-editor-toolbar-tools");
+    const editStrip = this.toolbarToolsEl.createDiv("html-editor-toolbar-tools-strip");
+    this.buildEditToolbar(editStrip);
+    editStrip.createDiv("html-editor-toolbar-divider is-vertical");
+    const protoStrip = this.toolbarToolsEl.createDiv("html-editor-toolbar-tools-strip");
+    this.buildPrototypeToolbar(protoStrip);
+
+    this.syncToolsPanelUi();
+  }
+
+  private toggleToolsPanel(): void {
+    this.toolsExpanded = !this.toolsExpanded;
+    this.syncToolsPanelUi();
+  }
+
+  private syncToolsPanelUi(): void {
+    if (!this.toolbarToolsEl || !this.toolsToggleBtn) return;
+    this.toolbarToolsEl.toggleClass("is-expanded", this.toolsExpanded);
+    this.toolsToggleBtn.toggleClass("is-active", this.toolsExpanded);
+    this.toolsToggleBtn.setText(this.toolsExpanded ? "工具 ▴" : "工具 ▾");
   }
 
   private getEditContext(): HtmlEditContext {
@@ -282,8 +313,8 @@ export class HtmlView extends TextFileView {
     };
   }
 
-  private buildInteractionToolbar(): void {
-    const row = this.toolbarEl.createDiv("html-editor-toolbar-interaction");
+  private buildInteractionToolbar(parent: HTMLElement): void {
+    const row = parent.createDiv("html-editor-interaction-segment is-inline");
     const modes: { mode: PreviewInteractionMode; label: string; title: string }[] = [
       {
         mode: PreviewInteractionMode.Select,
@@ -305,6 +336,7 @@ export class HtmlView extends TextFileView {
     const current = resolvePreviewInteractionMode(this.plugin.settings);
     for (const { mode, label, title } of modes) {
       const btn = row.createEl("button", { text: label });
+      btn.addClass("html-editor-interaction-btn");
       btn.setAttribute("title", title);
       if (current === mode) btn.addClass("is-active");
       btn.addEventListener("click", () => void this.setPreviewInteractionMode(mode));
@@ -327,18 +359,47 @@ export class HtmlView extends TextFileView {
     this.refreshPreview();
   }
 
-  private buildInspectorBar(): void {
-    this.inspectorBar = this.previewPane.createDiv("html-editor-inspector");
-    const info = this.inspectorBar.createDiv("html-editor-inspector-info");
-    this.inspectorSummaryEl = info.createDiv("html-editor-inspector-summary");
-    this.inspectorPathEl = info.createDiv("html-editor-inspector-path");
-    const actions = this.inspectorBar.createDiv("html-editor-inspector-actions");
+  private setupPreviewWorkspace(): void {
+    this.previewWorkspaceEl = this.previewPane.createDiv("html-editor-preview-workspace");
+    this.previewCanvasWrapEl = this.previewWorkspaceEl.createDiv(
+      "html-editor-preview-canvas-wrap"
+    );
+    this.buildInspectorFloat();
+  }
 
+  private buildInspectorFloat(): void {
+    this.inspectorFloatEl = this.previewCanvasWrapEl.createDiv("html-editor-inspector-float");
+
+    const floatHeader = this.inspectorFloatEl.createDiv("html-editor-inspector-float-header");
+    floatHeader.createSpan({ text: "属性", cls: "html-editor-inspector-float-label" });
+    const closeBtn = floatHeader.createEl("button", { text: "×" });
+    closeBtn.addClass("html-editor-inspector-close");
+    closeBtn.setAttribute("title", "取消选中并关闭");
+    closeBtn.addEventListener("click", () => {
+      this.selectedPreview = null;
+      this.updateInspectorBar();
+      this.postInspectorCmd("clear");
+    });
+
+    this.inspectorBar = this.inspectorFloatEl.createDiv("html-editor-inspector-card");
+    const header = this.inspectorBar.createDiv("html-editor-inspector-header");
+    this.inspectorModuleEl = header.createDiv("html-editor-inspector-module");
+    this.inspectorSummaryEl = header.createDiv("html-editor-inspector-title");
+    this.inspectorMetaEl = header.createDiv("html-editor-inspector-meta");
+
+    const pathBlock = this.inspectorBar.createDiv("html-editor-inspector-path-block");
+    pathBlock.createDiv({ cls: "html-editor-inspector-path-label", text: "DOM 路径" });
+    this.inspectorPathEl = pathBlock.createDiv("html-editor-inspector-path");
+
+    const actions = this.inspectorBar.createDiv("html-editor-inspector-actions");
     this.locateSourceBtn = actions.createEl("button", { text: "定位源码" });
-    this.locateSourceBtn.setAttribute("title", "在左侧源码中选中该元素的起始标签（画布模式不可用）");
+    this.locateSourceBtn.setAttribute(
+      "title",
+      "在左侧源码中选中该元素的起始标签（画布模式不可用）"
+    );
     this.locateSourceBtn.addEventListener("click", () => {
       if (viewModeIsCanvasOnly(this.currentMode)) {
-        new Notice("画布模式不显示源码。请切换到 Split 或 Source 查看代码。");
+        new Notice("画布模式不显示源码。请切换到分栏或源码模式查看代码。");
         return;
       }
       if (this.selectedPreview) this.locateSelectedInSource();
@@ -359,10 +420,12 @@ export class HtmlView extends TextFileView {
     );
     cycleBtn.addEventListener("click", () => this.postInspectorCmd("cycle"));
 
-    this.insertHintBar = this.previewPane.createDiv("html-editor-insert-hint");
-    const insertRow = this.insertHintBar.createDiv("html-editor-insert-hint-row");
-    insertRow.createSpan({ text: "插入位置", cls: "html-editor-insert-hint-label" });
-    const posGroup = insertRow.createDiv("html-editor-insert-position-group");
+    this.insertHintBar = this.inspectorFloatEl.createDiv("html-editor-insert-card");
+    this.insertHintBar.createDiv({
+      cls: "html-editor-insert-card-title",
+      text: "插入位置",
+    });
+    const posGroup = this.insertHintBar.createDiv("html-editor-insert-position-group");
     for (const pos of ["inside", "after", "before"] as InsertBlockPosition[]) {
       const meta = INSERT_POSITION_LABELS[pos];
       const btn = posGroup.createEl("button", { text: meta.short });
@@ -443,27 +506,29 @@ export class HtmlView extends TextFileView {
   }
 
   private updateInspectorBar(): void {
-    if (!this.inspectorBar) return;
-    const mode = resolvePreviewInteractionMode(this.plugin.settings);
+    if (!this.inspectorFloatEl) return;
     const inPreview = viewModeShowsPreview(this.currentMode);
     const canvas = viewModeIsCanvasOnly(this.currentMode);
-    const show =
-      modeShowsInspector(mode) && this.selectedPreview !== null && inPreview;
-    this.inspectorBar.style.display = show ? "" : "none";
+    const show = this.selectedPreview !== null && inPreview;
+
+    this.inspectorFloatEl.style.display = show ? "" : "none";
+    this.previewCanvasWrapEl?.toggleClass("has-inspector", show);
     if (this.locateSourceBtn) {
       this.locateSourceBtn.style.display = canvas ? "none" : "";
     }
     this.updateInsertHintBar();
     if (!show || !this.selectedPreview) return;
     const s = this.selectedPreview;
-    const typeBadge = `【${s.moduleType}】`;
-    const summary = canvas
-      ? `${typeBadge} ${s.label} · 层级 ${s.depth + 1}/${s.depthTotal}`
-      : `${typeBadge} ${s.label} · 源码第 ${s.line > 0 ? s.line : "?"} 行 · 层级 ${s.depth + 1}/${s.depthTotal}`;
+    const meta = canvas
+      ? `层级 ${s.depth + 1} / ${s.depthTotal}`
+      : `源码第 ${s.line > 0 ? s.line : "?"} 行 · 层级 ${s.depth + 1} / ${s.depthTotal}`;
     const path = s.path || s.label;
-    this.inspectorSummaryEl.setText(summary);
+    this.inspectorModuleEl.setText(s.moduleType);
+    this.inspectorSummaryEl.setText(s.label);
+    this.inspectorMetaEl.setText(meta);
     this.inspectorPathEl.setText(path);
-    this.inspectorSummaryEl.setAttr("title", summary);
+    this.inspectorSummaryEl.setAttr("title", s.label);
+    this.inspectorMetaEl.setAttr("title", meta);
     this.inspectorPathEl.setAttr("title", path);
   }
 
@@ -519,32 +584,30 @@ export class HtmlView extends TextFileView {
         }
       });
     };
+    const sep = () => parent.createDiv("html-editor-toolbar-divider is-inline");
 
-    add("撤销", "撤销（左侧 Ctrl+Z；改文字模式下需先点预览再撤销）", () => editUndo(ctx()));
-    add("重做", "重做（左侧 Ctrl+Shift+Z）", () => editRedo(ctx()));
-    parent.createDiv("toolbar-separator");
-
-    add("粗体", "粗体 <strong>", () => editBold(ctx()));
-    add("斜体", "斜体 <em>", () => editItalic(ctx()));
+    add("撤销", "撤销（Ctrl+Z）", () => editUndo(ctx()));
+    add("重做", "重做（Ctrl+Shift+Z）", () => editRedo(ctx()));
+    sep();
+    add("粗体", "粗体", () => editBold(ctx()));
+    add("斜体", "斜体", () => editItalic(ctx()));
     add("下划线", "下划线", () => editUnderline(ctx()));
     add("删除线", "删除线", () => editStrike(ctx()));
     add("清格式", "清除行内格式", () => editClearFormat(ctx()));
-    parent.createDiv("toolbar-separator");
-
-    add("链接", "网页 / 库内文件 / 页内锚点", () => this.openLinkDialog());
-    add("媒体", "插入图片、视频或音频（网址或库内文件）", () => this.openMediaDialog());
-    add("本文媒体", "查看并复制当前 HTML 中的媒体路径", () => this.openDocumentMediaList());
-    add("H1", "标题 <h1>", () => editInsertH1(ctx()));
-    add("H2", "标题 <h2>", () => editInsertH2(ctx()));
-    add("H3", "标题 <h3>", () => editInsertH3(ctx()));
-    add("段落", "段落 <p>", () => editInsertP(ctx()));
-    add("列表", "无序列表 <ul><li>", () => editInsertUl(ctx()));
-    add("引用", "引用 <blockquote>", () => editInsertBlockquote(ctx()));
-    add("代码", "行内 <code>", () => editInsertCode(ctx()));
-    add("换行", "插入 <br>", () => editInsertBr(ctx()));
-    parent.createDiv("toolbar-separator");
-
-    add("删块", "删除当前块级元素（预览）或当前行（源码）", () => editDeleteBlock(ctx()));
+    sep();
+    add("链接", "插入链接", () => this.openLinkDialog());
+    add("媒体", "插入媒体", () => this.openMediaDialog());
+    add("本文媒体", "列出文中媒体", () => this.openDocumentMediaList());
+    sep();
+    add("H1", "标题 H1", () => editInsertH1(ctx()));
+    add("H2", "标题 H2", () => editInsertH2(ctx()));
+    add("H3", "标题 H3", () => editInsertH3(ctx()));
+    add("段落", "段落", () => editInsertP(ctx()));
+    add("列表", "无序列表", () => editInsertUl(ctx()));
+    add("引用", "引用", () => editInsertBlockquote(ctx()));
+    add("代码", "行内代码", () => editInsertCode(ctx()));
+    add("换行", "换行", () => editInsertBr(ctx()));
+    add("删块", "删除块", () => editDeleteBlock(ctx()));
   }
 
   private buildPrototypeToolbar(parent: HTMLElement): void {
@@ -649,6 +712,7 @@ export class HtmlView extends TextFileView {
     this.currentMode = mode;
     this.updateContentMode();
     this.buildToolbar();
+    this.updateInspectorBar();
 
     this.resizeHandle.style.display = mode === ViewMode.Split ? "" : "none";
 
@@ -749,7 +813,8 @@ export class HtmlView extends TextFileView {
       ? "allow-scripts allow-same-origin allow-forms allow-popups"
       : "allow-scripts allow-same-origin";
 
-    this.previewFrame = this.previewPane.createEl("iframe", {
+    const frameParent = this.previewCanvasWrapEl ?? this.previewPane;
+    this.previewFrame = frameParent.createEl("iframe", {
       attr: { sandbox: sandboxAttr },
     });
 

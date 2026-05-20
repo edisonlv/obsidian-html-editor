@@ -140,37 +140,40 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
   var css = document.createElement('style');
   css.textContent = [
     '.html-editor-hover {',
-    '  outline: 1px dashed rgba(99, 102, 241, 0.75) !important;',
+    '  outline: 1px dashed rgba(14, 165, 233, 0.9) !important;',
     '  outline-offset: 2px;',
+    '  box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.08) !important;',
     '}',
     '.html-editor-selected {',
-    '  outline: 2px solid #6366f1 !important;',
-    '  outline-offset: 2px;',
-    '  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15);',
+    '  outline: 2px solid #4f46e5 !important;',
+    '  outline-offset: 3px;',
+    '  box-shadow: 0 0 0 7px rgba(79, 70, 229, 0.14), 0 10px 28px rgba(15, 23, 42, 0.12) !important;',
+    '  cursor: move !important;',
     '}',
     '.html-editor-insert-inside {',
-    '  box-shadow: inset 0 0 0 3px rgba(34, 197, 94, 0.85) !important;',
+    '  box-shadow: inset 0 0 0 3px rgba(34, 197, 94, 0.9), 0 0 0 7px rgba(34, 197, 94, 0.12) !important;',
     '}',
     '.html-editor-insert-after {',
-    '  box-shadow: 0 0 0 2px #6366f1, 0 10px 0 0 rgba(34, 197, 94, 0.8) !important;',
+    '  box-shadow: 0 0 0 2px #4f46e5, 0 12px 0 -3px rgba(34, 197, 94, 0.95), 0 18px 26px rgba(34, 197, 94, 0.18) !important;',
     '}',
     '.html-editor-insert-before {',
-    '  box-shadow: 0 0 0 2px #6366f1, 0 -10px 0 0 rgba(34, 197, 94, 0.8) !important;',
+    '  box-shadow: 0 0 0 2px #4f46e5, 0 -12px 0 -3px rgba(34, 197, 94, 0.95), 0 -18px 26px rgba(34, 197, 94, 0.18) !important;',
     '}',
     '.html-editor-insert-flash {',
     '  animation: html-editor-flash 2s ease-out;',
     '}',
     '@keyframes html-editor-flash {',
-    '  0%, 15% { outline: 3px solid #22c55e !important; outline-offset: 2px; }',
+    '  0%, 18% { outline: 3px solid #22c55e !important; outline-offset: 4px; box-shadow: 0 0 0 9px rgba(34, 197, 94, 0.16) !important; }',
     '  100% { outline: none; }',
     '}',
     '#html-editor-float-label {',
     '  position: fixed; z-index: 2147483647; pointer-events: none;',
     '  font: 11px/1.3 var(--font-monospace, monospace);',
-    '  padding: 2px 6px; border-radius: 4px;',
-    '  background: rgba(15, 23, 42, 0.92); color: #e2e8f0;',
-    '  border: 1px solid rgba(99, 102, 241, 0.5);',
-    '  max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
+    '  padding: 5px 8px; border-radius: 999px;',
+    '  background: rgba(15, 23, 42, 0.94); color: #f8fafc;',
+    '  border: 1px solid rgba(148, 163, 184, 0.38);',
+    '  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.24);',
+    '  max-width: 560px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
     '}'
   ].join('\\n');
   document.head.appendChild(css);
@@ -230,6 +233,8 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
       labelEl.style.top = Math.max(4, r.top - 22) + 'px';
       labelEl.style.display = 'block';
       __heSyncInsertMarker(window.__heInsertPos);
+    } else {
+      labelEl.style.display = 'none';
     }
   }
 
@@ -272,8 +277,13 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
       if (typeof window.__heEndDrag === 'function') window.__heEndDrag();
       return;
     }
-    if (e.data.type === 'html-editor-inspector-cmd' && selectedEl) {
+    if (e.data.type === 'html-editor-inspector-cmd') {
       var cmd = e.data.command;
+      if (cmd === 'clear') {
+        setSelected(null, 0, 1);
+        return;
+      }
+      if (!selectedEl) return;
       if (cmd === 'parent' && selectedEl.parentElement) {
         var p = selectedEl.parentElement;
         while (p && !__hePickable(p)) p = p.parentElement;
