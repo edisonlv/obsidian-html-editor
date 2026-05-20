@@ -1,5 +1,5 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
-import { PreviewInteractionMode, ViewMode } from "./constants";
+import { normalizePreviewInteractionMode, PreviewInteractionMode, ViewMode } from "./constants";
 import type HtmlEditorPlugin from "./main";
 
 export interface HtmlEditorSettings {
@@ -34,13 +34,13 @@ export const DEFAULT_SETTINGS: HtmlEditorSettings = {
 };
 
 export function resolvePreviewInteractionMode(s: HtmlEditorSettings): PreviewInteractionMode {
-  return s.previewInteractionMode;
+  return normalizePreviewInteractionMode(s.previewInteractionMode);
 }
 
 export function syncLegacyPreviewFlags(s: HtmlEditorSettings): void {
   const mode = resolvePreviewInteractionMode(s);
   s.previewEditable = mode === PreviewInteractionMode.Text;
-  s.previewDragMove = mode === PreviewInteractionMode.Drag;
+  s.previewDragMove = mode === PreviewInteractionMode.Layout;
 }
 
 /** 合并并校验设置，避免损坏的 data.json 或非法枚举导致插件 onload 崩溃 */
@@ -50,7 +50,10 @@ export function sanitizeHtmlEditorSettings(raw: unknown): HtmlEditorSettings {
       ? { ...DEFAULT_SETTINGS, ...(raw as Partial<HtmlEditorSettings>) }
       : { ...DEFAULT_SETTINGS };
   const validMode = (m: unknown): m is ViewMode =>
-    m === ViewMode.Preview || m === ViewMode.Source || m === ViewMode.Split;
+    m === ViewMode.Preview ||
+    m === ViewMode.Source ||
+    m === ViewMode.Split ||
+    m === ViewMode.Canvas;
   if (!validMode(base.defaultMode)) base.defaultMode = DEFAULT_SETTINGS.defaultMode;
   if (typeof base.allowScripts !== "boolean") base.allowScripts = DEFAULT_SETTINGS.allowScripts;
   if (typeof base.wordWrap !== "boolean") base.wordWrap = DEFAULT_SETTINGS.wordWrap;
@@ -69,16 +72,20 @@ export function sanitizeHtmlEditorSettings(raw: unknown): HtmlEditorSettings {
   const validInteraction = (m: unknown): m is PreviewInteractionMode =>
     m === PreviewInteractionMode.Select ||
     m === PreviewInteractionMode.Text ||
+    m === PreviewInteractionMode.Layout ||
     m === PreviewInteractionMode.Drag;
 
   if (!validInteraction(base.previewInteractionMode)) {
     if (typeof base.previewDragMove === "boolean" && base.previewDragMove) {
-      base.previewInteractionMode = PreviewInteractionMode.Drag;
+      base.previewInteractionMode = PreviewInteractionMode.Layout;
     } else if (typeof base.previewEditable === "boolean" && base.previewEditable) {
       base.previewInteractionMode = PreviewInteractionMode.Text;
     } else {
       base.previewInteractionMode = DEFAULT_SETTINGS.previewInteractionMode;
     }
+  }
+  if (base.previewInteractionMode === PreviewInteractionMode.Drag) {
+    base.previewInteractionMode = PreviewInteractionMode.Layout;
   }
   syncLegacyPreviewFlags(base);
   return base;
@@ -104,6 +111,7 @@ export class HtmlEditorSettingTab extends PluginSettingTab {
       .addDropdown((dropdown) =>
         dropdown
           .addOption(ViewMode.Preview, "Preview")
+          .addOption(ViewMode.Canvas, "Canvas（仅页面，无源码）")
           .addOption(ViewMode.Source, "Source Code")
           .addOption(ViewMode.Split, "Split (Editor + Preview)")
           .setValue(this.plugin.settings.defaultMode)
@@ -174,9 +182,9 @@ export class HtmlEditorSettingTab extends PluginSettingTab {
       )
       .addDropdown((dropdown) =>
         dropdown
-          .addOption(PreviewInteractionMode.Select, "选择元素（推荐）")
+          .addOption(PreviewInteractionMode.Select, "选择元素")
+          .addOption(PreviewInteractionMode.Layout, "布局 / 原型（选择+拖动）")
           .addOption(PreviewInteractionMode.Text, "改文字")
-          .addOption(PreviewInteractionMode.Drag, "拖动布局")
           .setValue(this.plugin.settings.previewInteractionMode)
           .onChange(async (value) => {
             this.plugin.settings.previewInteractionMode = value as PreviewInteractionMode;
@@ -189,7 +197,7 @@ export class HtmlEditorSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Auto locate in source")
       .setDesc(
-        "在「选择」模式下单击元素，或在「改文字」模式下 Alt+单击时，自动在左侧源码中选中对应起始标签"
+        "在 Split 下：选择模式单击元素，或改文字模式 Alt+单击时，自动在左侧选中对应标签。「画布」模式不显示源码，此项不生效。"
       )
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.autoLocateOnSelect).onChange(async (value) => {

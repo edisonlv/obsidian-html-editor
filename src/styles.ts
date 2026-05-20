@@ -125,6 +125,43 @@ export const STYLES = `
   min-width: 52px;
 }
 
+.html-editor-toolbar-prototype {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 0 4px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.html-editor-color-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.html-editor-color-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+  padding: 0;
+}
+
+.html-editor-color-swatch:hover {
+  transform: scale(1.08);
+}
+
+.html-editor-color-native-wrap input[type="color"] {
+  width: 100%;
+  height: 32px;
+  border: none;
+  cursor: pointer;
+}
+
 /* ── Preview inspector bar（固定高度，避免长路径换行顶动预览） ── */
 .html-editor-inspector {
   display: flex;
@@ -195,6 +232,129 @@ export const STYLES = `
   color: var(--text-on-accent);
 }
 
+/* ── 布局模式：插入位置提示条 ── */
+.html-editor-insert-hint {
+  flex-shrink: 0;
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  font-size: 11px;
+}
+
+.html-editor-insert-hint-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.html-editor-insert-hint-label {
+  color: var(--text-muted);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.html-editor-insert-position-group {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.html-editor-insert-position-group button {
+  min-width: 28px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.html-editor-insert-position-group button.is-active {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: #22c55e;
+  color: var(--text-normal);
+}
+
+.html-editor-insert-hint-text {
+  margin-top: 4px;
+  color: var(--text-muted);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.html-editor-insert-block-context {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+}
+
+.html-editor-insert-block-context-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.html-editor-insert-block-target {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-normal);
+}
+
+.html-editor-insert-block-path {
+  margin-top: 4px;
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.html-editor-insert-block-hint {
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  font-size: 12px;
+  color: var(--text-normal);
+}
+
+.html-editor-insert-block-grid-label {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+}
+
+.html-editor-insert-block-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.html-editor-insert-block-grid button {
+  padding: 10px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.html-editor-insert-block-grid button:hover {
+  border-color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+}
+
 /* ── Content Area ── */
 .html-editor-content {
   flex: 1;
@@ -204,7 +364,9 @@ export const STYLES = `
 }
 
 .html-editor-content.mode-preview .html-editor-source-pane,
-.html-editor-content.mode-preview .html-editor-resize-handle {
+.html-editor-content.mode-preview .html-editor-resize-handle,
+.html-editor-content.mode-canvas .html-editor-source-pane,
+.html-editor-content.mode-canvas .html-editor-resize-handle {
   display: none;
 }
 .html-editor-content.mode-source .html-editor-preview-pane,

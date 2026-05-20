@@ -34,12 +34,17 @@ export default class HtmlEditorPlugin extends Plugin {
   private registerCommands(): void {
     this.addCommand({
       id: "toggle-view-mode",
-      name: "Toggle view mode (Preview / Source / Split)",
+      name: "Toggle view mode (Preview / Canvas / Source / Split)",
       checkCallback: (checking: boolean) => {
         const view = this.app.workspace.getActiveViewOfType(HtmlView);
         if (!view) return false;
         if (checking) return true;
-        const modes = [ViewMode.Preview, ViewMode.Source, ViewMode.Split];
+        const modes = [
+          ViewMode.Preview,
+          ViewMode.Canvas,
+          ViewMode.Source,
+          ViewMode.Split,
+        ];
         const current = view.currentMode;
         const idx = modes.indexOf(current);
         const next = modes[(idx + 1) % modes.length];

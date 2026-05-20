@@ -1,15 +1,17 @@
-import { PreviewInteractionMode } from "./constants";
+import { PreviewInteractionMode, normalizePreviewInteractionMode } from "./constants";
 
-/** 注入预览 iframe 的脚本（元素检查器 + 可选改字/拖动） */
+/** 注入预览 iframe 的脚本（元素检查器 + 改字 / 布局拖动 / 设色 / 插块） */
 export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string {
-  const isSelect = mode === PreviewInteractionMode.Select;
-  const isText = mode === PreviewInteractionMode.Text;
-  const isDrag = mode === PreviewInteractionMode.Drag;
+  const normalized = normalizePreviewInteractionMode(mode);
+  const isSelect = normalized === PreviewInteractionMode.Select;
+  const isLayout = normalized === PreviewInteractionMode.Layout;
+  const isText = normalized === PreviewInteractionMode.Text;
+  const isInspect = isSelect || isLayout;
 
   return `
 <script data-injected="html-editor">
 (function() {
-  window.__heMode = ${JSON.stringify(mode)};
+  window.__heMode = ${JSON.stringify(normalized)};
 
   function __heSkipTag(el) {
     if (!el || !el.tagName) return true;
@@ -27,15 +29,46 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     if (__heMapEl && __heMapEl.textContent) __heMap = JSON.parse(__heMapEl.textContent);
   } catch (e) { __heMap = []; }
 
+  function __hePickable(el) {
+    if (__heSkipTag(el)) return false;
+    if (${isLayout}) return true;
+    return __heHasLine(el);
+  }
+
   function __heStackAt(x, y) {
     var list = document.elementsFromPoint(x, y);
     var out = [];
     for (var i = 0; i < list.length; i++) {
       var el = list[i];
-      if (__heSkipTag(el) || !__heHasLine(el)) continue;
+      if (!__hePickable(el)) continue;
       out.push(el);
     }
     return out;
+  }
+
+  function __heMarkProtoEl(el) {
+    if (!el || el.nodeType !== 1) return;
+    if (!__heHasLine(el)) el.setAttribute('data-he-proto', '1');
+  }
+
+  function __heModuleType(el) {
+    var tag = (el.tagName || '').toLowerCase();
+    var cls = (el.className && typeof el.className === 'string') ? el.className.toLowerCase() : '';
+    if (tag === 'button' || cls.indexOf('proto-btn') >= 0 || (cls.indexOf('btn') >= 0 && tag !== 'div')) return '按钮';
+    if (tag === 'img' || tag === 'picture' || tag === 'svg') return '图片';
+    if (tag === 'video' || tag === 'audio') return '媒体';
+    if (/^h[1-6]$/.test(tag)) return '标题';
+    if (tag === 'p' || tag === 'span' || cls.indexOf('proto-text') >= 0) return '文本';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return '表单';
+    if (tag === 'ul' || tag === 'ol' || tag === 'li') return '列表';
+    if (tag === 'table' || tag === 'tr' || tag === 'td' || tag === 'th') return '表格';
+    if (tag === 'a') return cls.indexOf('btn') >= 0 ? '按钮' : '链接';
+    if (cls.indexOf('proto-card') >= 0 || cls.indexOf('card') >= 0) return '卡片';
+    if (cls.indexOf('proto-spacer') >= 0) return '留白';
+    if (cls.indexOf('proto-block') >= 0 || cls.indexOf('proto-section') >= 0) return '容器';
+    if (tag.indexOf('motion') >= 0 || tag === 'motion.div') return '容器';
+    if (tag === 'motion.div' || tag === 'div' || tag === 'section' || tag === 'article' || tag === 'main' || tag === 'header' || tag === 'footer' || tag === 'aside' || tag === 'nav') return '容器';
+    return '元素';
   }
 
   function __heDescribe(el) {
@@ -51,7 +84,7 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     var parts = [];
     var cur = el;
     while (cur && cur !== document.body && cur !== document.documentElement) {
-      if (__heHasLine(cur) && !__heSkipTag(cur)) parts.unshift(__heDescribe(cur));
+      if (!__heSkipTag(cur) && __hePickable(cur)) parts.unshift(__heDescribe(cur));
       cur = cur.parentElement;
     }
     return parts.join(' › ');
@@ -66,22 +99,17 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     var entry = sid >= 0 && __heMap[sid] ? __heMap[sid] : null;
     window.parent.postMessage({
       type: 'html-editor-select',
-      line: entry ? entry.line : parseInt(el.dataset.sourceLine, 10),
       sourceId: sid >= 0 ? sid : undefined,
       from: entry ? entry.from : undefined,
       to: entry ? entry.to : undefined,
       tag: el.tagName.toLowerCase(),
+      moduleType: __heModuleType(el),
       label: __heDescribe(el),
       path: __hePath(el),
+      line: entry ? entry.line : (el.dataset.sourceLine ? parseInt(el.dataset.sourceLine, 10) : 0),
       depth: depth,
       depthTotal: depthTotal
     }, '*');
-  }
-
-  function __hePickAt(x, y, preferOuter) {
-    var stack = __heStackAt(x, y);
-    if (!stack.length) return null;
-    return preferOuter ? stack[stack.length - 1] : stack[0];
   }
 
   var hoverEl = null;
@@ -89,73 +117,10 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
   var labelEl = null;
   var lastClickX = 0, lastClickY = 0, lastClickT = 0, cycleIdx = 0, lastStack = [];
 
-  var css = document.createElement('style');
-  css.textContent = [
-    '[data-source-line].html-editor-hover {',
-    '  outline: 1px dashed rgba(99, 102, 241, 0.75) !important;',
-    '  outline-offset: 2px;',
-    '}',
-    '[data-source-line].html-editor-selected {',
-    '  outline: 2px solid #6366f1 !important;',
-    '  outline-offset: 2px;',
-    '  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15);',
-    '}',
-    '#html-editor-float-label {',
-    '  position: fixed; z-index: 2147483647; pointer-events: none;',
-    '  font: 11px/1.3 var(--font-monospace, monospace);',
-    '  padding: 2px 6px; border-radius: 4px;',
-    '  background: rgba(15, 23, 42, 0.92); color: #e2e8f0;',
-    '  border: 1px solid rgba(99, 102, 241, 0.5);',
-    '  max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
-    '}'
-  ].join('\\n');
-  document.head.appendChild(css);
-
-  labelEl = document.createElement("div");
-  labelEl.id = 'html-editor-float-label';
-  labelEl.style.display = 'none';
-  document.body.appendChild(labelEl);
-
-  function setHover(el) {
-    if (hoverEl && hoverEl !== selectedEl) hoverEl.classList.remove('html-editor-hover');
-    hoverEl = el;
-    if (el && el !== selectedEl) {
-      el.classList.add('html-editor-hover');
-      labelEl.textContent = __heDescribe(el) + ' · L' + (el.dataset.sourceLine || '?');
-      var r = el.getBoundingClientRect();
-      labelEl.style.left = Math.max(4, r.left) + 'px';
-      labelEl.style.top = Math.max(4, r.top - 22) + 'px';
-      labelEl.style.display = 'block';
-    } else if (!selectedEl) {
-      labelEl.style.display = 'none';
-    }
-  }
-
-  function setSelected(el, depth, depthTotal) {
-    if (selectedEl) selectedEl.classList.remove('html-editor-selected');
-    selectedEl = el;
-    if (el) {
-      el.classList.add('html-editor-selected');
-      __hePostSelect(el, depth, depthTotal);
-      labelEl.textContent = __heDescribe(el) + ' · L' + (el.dataset.sourceLine || '?') + ' · 层 ' + (depth + 1) + '/' + depthTotal + ' · 连点切层';
-      var r = el.getBoundingClientRect();
-      labelEl.style.left = Math.max(4, r.left) + 'px';
-      labelEl.style.top = Math.max(4, r.top - 22) + 'px';
-      labelEl.style.display = 'block';
-    }
-  }
-
-  ${isSelect ? `
-  document.addEventListener('mousemove', function(e) {
-    if (window.__htmlEditorDragging) return;
+  /** 同位置连点切层；Shift=最外层 */
+  function __hePickFromPointer(e) {
     var stack = __heStackAt(e.clientX, e.clientY);
-    setHover(stack.length ? stack[0] : null);
-  }, true);
-
-  document.addEventListener('click', function(e) {
-    if (window.__htmlEditorDragging) return;
-    var stack = __heStackAt(e.clientX, e.clientY);
-    if (!stack.length) return;
+    if (!stack.length) return null;
     var now = Date.now();
     var sameSpot = Math.abs(e.clientX - lastClickX) < 6 && Math.abs(e.clientY - lastClickY) < 6 && (now - lastClickT) < 600;
     if (e.shiftKey) {
@@ -169,35 +134,160 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     lastClickX = e.clientX;
     lastClickY = e.clientY;
     lastClickT = now;
-    var el = stack[cycleIdx];
+    return { el: stack[cycleIdx], depth: cycleIdx, total: stack.length };
+  }
+
+  var css = document.createElement('style');
+  css.textContent = [
+    '.html-editor-hover {',
+    '  outline: 1px dashed rgba(99, 102, 241, 0.75) !important;',
+    '  outline-offset: 2px;',
+    '}',
+    '.html-editor-selected {',
+    '  outline: 2px solid #6366f1 !important;',
+    '  outline-offset: 2px;',
+    '  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15);',
+    '}',
+    '.html-editor-insert-inside {',
+    '  box-shadow: inset 0 0 0 3px rgba(34, 197, 94, 0.85) !important;',
+    '}',
+    '.html-editor-insert-after {',
+    '  box-shadow: 0 0 0 2px #6366f1, 0 10px 0 0 rgba(34, 197, 94, 0.8) !important;',
+    '}',
+    '.html-editor-insert-before {',
+    '  box-shadow: 0 0 0 2px #6366f1, 0 -10px 0 0 rgba(34, 197, 94, 0.8) !important;',
+    '}',
+    '.html-editor-insert-flash {',
+    '  animation: html-editor-flash 2s ease-out;',
+    '}',
+    '@keyframes html-editor-flash {',
+    '  0%, 15% { outline: 3px solid #22c55e !important; outline-offset: 2px; }',
+    '  100% { outline: none; }',
+    '}',
+    '#html-editor-float-label {',
+    '  position: fixed; z-index: 2147483647; pointer-events: none;',
+    '  font: 11px/1.3 var(--font-monospace, monospace);',
+    '  padding: 2px 6px; border-radius: 4px;',
+    '  background: rgba(15, 23, 42, 0.92); color: #e2e8f0;',
+    '  border: 1px solid rgba(99, 102, 241, 0.5);',
+    '  max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
+    '}'
+  ].join('\\n');
+  document.head.appendChild(css);
+
+  labelEl = document.createElement("div");
+  labelEl.id = "html-editor-float-label";
+  labelEl.style.display = 'none';
+  document.body.appendChild(labelEl);
+
+  function setHover(el) {
+    if (hoverEl && hoverEl !== selectedEl) hoverEl.classList.remove('html-editor-hover');
+    hoverEl = el;
+    if (el && el !== selectedEl) {
+      el.classList.add('html-editor-hover');
+      var lineHint = el.dataset.sourceLine ? ('L' + el.dataset.sourceLine) : (el.dataset.heProto ? '未映射' : '?');
+      labelEl.textContent = '【' + __heModuleType(el) + '】 ' + __heDescribe(el) + ' · ' + lineHint;
+      var r = el.getBoundingClientRect();
+      labelEl.style.left = Math.max(4, r.left) + 'px';
+      labelEl.style.top = Math.max(4, r.top - 22) + 'px';
+      labelEl.style.display = 'block';
+    } else if (!selectedEl) {
+      labelEl.style.display = 'none';
+    }
+  }
+
+  window.__heInsertPos = 'after';
+
+  function __heClearInsertMarker() {
+    if (!selectedEl) return;
+    selectedEl.classList.remove('html-editor-insert-inside', 'html-editor-insert-after', 'html-editor-insert-before');
+  }
+
+  function __heSyncInsertMarker(pos) {
+    window.__heInsertPos = pos || 'after';
+    __heClearInsertMarker();
+    if (!selectedEl || !${isLayout}) return;
+    var cls = window.__heInsertPos === 'inside'
+      ? 'html-editor-insert-inside'
+      : (window.__heInsertPos === 'before' ? 'html-editor-insert-before' : 'html-editor-insert-after');
+    selectedEl.classList.add(cls);
+  }
+
+  function setSelected(el, depth, depthTotal) {
+    if (selectedEl) {
+      selectedEl.classList.remove('html-editor-selected');
+      __heClearInsertMarker();
+    }
+    selectedEl = el;
+    if (el) {
+      el.classList.add('html-editor-selected');
+      __hePostSelect(el, depth, depthTotal);
+      var hint = ${isLayout ? "' · 拖动移动'" : "''"};
+      var lineHint2 = el.dataset.sourceLine ? ('L' + el.dataset.sourceLine) : (el.dataset.heProto ? '未映射' : '?');
+      labelEl.textContent = '【' + __heModuleType(el) + '】 ' + __heDescribe(el) + ' · ' + lineHint2 + ' · 层 ' + (depth + 1) + '/' + depthTotal + ' · 连点切层' + hint;
+      var r = el.getBoundingClientRect();
+      labelEl.style.left = Math.max(4, r.left) + 'px';
+      labelEl.style.top = Math.max(4, r.top - 22) + 'px';
+      labelEl.style.display = 'block';
+      __heSyncInsertMarker(window.__heInsertPos);
+    }
+  }
+
+  ${isInspect ? `
+  document.addEventListener('mousemove', function(e) {
+    if (window.__htmlEditorDragging) return;
+    var stack = __heStackAt(e.clientX, e.clientY);
+    setHover(stack.length ? stack[0] : null);
+  }, true);
+
+  document.addEventListener('click', function(e) {
+    if (window.__htmlEditorDragging) return;
+    ${isLayout ? "return;" : ""}
+    var picked = __hePickFromPointer(e);
+    if (!picked) return;
     e.preventDefault();
     e.stopPropagation();
-    setSelected(el, cycleIdx, stack.length);
+    setSelected(picked.el, picked.depth, picked.total);
   }, true);
   ` : ""}
 
   ${isText ? `
   document.addEventListener('click', function(e) {
     if (!e.altKey || window.__htmlEditorDragging) return;
-    var el = __hePickAt(e.clientX, e.clientY, e.shiftKey);
-    if (!el) return;
+    var picked = __hePickFromPointer(e);
+    if (!picked) return;
     e.preventDefault();
     e.stopPropagation();
-    setSelected(el, 0, 1);
+    setSelected(picked.el, 0, 1);
   }, true);
   ` : ""}
 
   window.addEventListener('message', function(e) {
     if (!e.data) return;
+    if (e.data.type === 'html-editor-insert-position') {
+      __heSyncInsertMarker(e.data.position);
+      return;
+    }
+    if (e.data.type === 'html-editor-cancel-drag') {
+      if (typeof window.__heEndDrag === 'function') window.__heEndDrag();
+      return;
+    }
     if (e.data.type === 'html-editor-inspector-cmd' && selectedEl) {
       var cmd = e.data.command;
       if (cmd === 'parent' && selectedEl.parentElement) {
         var p = selectedEl.parentElement;
-        while (p && (__heSkipTag(p) || !__heHasLine(p))) p = p.parentElement;
+        while (p && !__hePickable(p)) p = p.parentElement;
         if (p) setSelected(p, 0, 1);
       }
       if (cmd === 'child') {
-        var c = selectedEl.querySelector('[data-source-line]');
+        var c = selectedEl.firstElementChild;
+        while (c && !__hePickable(c)) c = c.nextElementSibling;
+        if (!c) {
+          var kids = selectedEl.querySelectorAll('*');
+          for (var ki = 0; ki < kids.length; ki++) {
+            if (__hePickable(kids[ki])) { c = kids[ki]; break; }
+          }
+        }
         if (c) setSelected(c, 0, 1);
       }
       if (cmd === 'cycle') {
@@ -208,6 +298,68 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
         }
       }
       return;
+    }
+    if (e.data.type === 'html-editor-cmd') {
+      var cmd = e.data.command;
+      var val = e.data.value || '';
+      try {
+        if (cmd === 'setStyle' && selectedEl) {
+          var styleObj = JSON.parse(val);
+          if (styleObj && styleObj.prop) selectedEl.style[styleObj.prop] = styleObj.value || '';
+          __heNotifyChanged();
+          return;
+        }
+        if (cmd === 'insertBlock') {
+          var html = val;
+          var position = window.__heInsertPos || 'after';
+          try {
+            if (val && String(val).trim().charAt(0) === '{') {
+              var payload = JSON.parse(val);
+              html = payload.html || '';
+              position = payload.position || position;
+            }
+          } catch (parseErr) { /* 纯 HTML 字符串 */ }
+          if (!html) return;
+          var anchor = selectedEl;
+          var newEl = null;
+          if (anchor) {
+            if (position === 'inside') {
+              anchor.insertAdjacentHTML('beforeend', html);
+              newEl = anchor.lastElementChild;
+            } else if (position === 'before') {
+              anchor.insertAdjacentHTML('beforebegin', html);
+              newEl = anchor.previousElementSibling;
+            } else {
+              anchor.insertAdjacentHTML('afterend', html);
+              newEl = anchor.nextElementSibling;
+            }
+          } else {
+            document.body.insertAdjacentHTML('beforeend', html);
+            newEl = document.body.lastElementChild;
+            position = 'after';
+          }
+          if (newEl && newEl.nodeType === 1) {
+            __heMarkProtoEl(newEl);
+            newEl.classList.add('html-editor-insert-flash');
+            setTimeout(function() {
+              newEl.classList.remove('html-editor-insert-flash');
+            }, 2200);
+            setSelected(newEl, 0, 1);
+            lastClickX = 0;
+            lastClickY = 0;
+            cycleIdx = 0;
+            lastStack = [];
+          }
+          window.parent.postMessage({
+            type: 'html-editor-insert-done',
+            position: position,
+            anchorLabel: anchor ? __heDescribe(anchor) : 'body',
+            blockLabel: newEl ? __heDescribe(newEl) : ''
+          }, '*');
+          __heNotifyChanged();
+          return;
+        }
+      } catch (err) { console.error('[html-editor]', err); }
     }
     ${isText ? `
     if (e.data.type === 'html-editor-cmd') {
@@ -220,6 +372,8 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
         if (cmd === 'bold' || cmd === 'italic' || cmd === 'underline' || cmd === 'strikeThrough' || cmd === 'removeFormat') {
           doc.execCommand(cmd); __heNotifyChanged(); return;
         }
+        if (cmd === 'foreColor') { doc.execCommand('foreColor', false, val); __heNotifyChanged(); return; }
+        if (cmd === 'backColor' || cmd === 'hiliteColor') { doc.execCommand('hiliteColor', false, val); __heNotifyChanged(); return; }
         if (cmd === 'createLink') { if (val) doc.execCommand('createLink', false, val); __heNotifyChanged(); return; }
         if (cmd === 'insertHTML') { doc.execCommand('insertHTML', false, val); __heNotifyChanged(); return; }
         if (cmd === 'wrapTag') {
@@ -246,7 +400,7 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
     ` : ""}
   });
 
-  ${isDrag ? `
+  ${isLayout ? `
   (function() {
     var TH = 4, dragEl = null, startX = 0, startY = 0, baseX = 0, baseY = 0, moved = false;
     function parseTranslate(el) {
@@ -255,18 +409,28 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
       if (m) return { x: parseFloat(m[1]), y: parseFloat(m[2]) };
       return { x: 0, y: 0 };
     }
-    document.addEventListener('mousedown', function(e) {
-      if (e.button !== 0) return;
-      var stack = __heStackAt(e.clientX, e.clientY);
-      if (!stack.length) return;
-      dragEl = stack[0];
+    window.__heEndDrag = function() {
+      if (!dragEl) return;
+      if (moved) __heNotifyChanged();
+      dragEl = null;
+      moved = false;
       window.__htmlEditorDragging = false;
+    };
+    document.addEventListener('mousedown', function(e) {
+      if (e.button !== 0 || window.__htmlEditorDragging) return;
+      var picked = __hePickFromPointer(e);
+      if (!picked && selectedEl && selectedEl.contains(e.target)) {
+        picked = { el: selectedEl, depth: 0, total: 1 };
+      }
+      if (!picked) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSelected(picked.el, picked.depth, picked.total);
+      dragEl = picked.el;
       moved = false;
       startX = e.clientX; startY = e.clientY;
       var tr = parseTranslate(dragEl);
       baseX = tr.x; baseY = tr.y;
-      dragEl.classList.add('html-editor-selected');
-      e.preventDefault();
     }, true);
     document.addEventListener('mousemove', function(e) {
       if (!dragEl) return;
@@ -279,11 +443,7 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
       dragEl.style.transform = 'translate(' + (baseX + dx) + 'px, ' + (baseY + dy) + 'px)';
     }, true);
     document.addEventListener('mouseup', function() {
-      if (!dragEl) return;
-      if (moved) __heNotifyChanged();
-      dragEl.classList.remove('html-editor-selected');
-      dragEl = null;
-      window.__htmlEditorDragging = false;
+      window.__heEndDrag();
     }, true);
   })();
   ` : ""}

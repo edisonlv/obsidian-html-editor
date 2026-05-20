@@ -4,6 +4,7 @@ import {
   editBold,
   editClearFormat,
   editDeleteBlock,
+  editInsertBlock,
   editInsertBlockquote,
   editInsertBr,
   editInsertCode,
@@ -16,12 +17,14 @@ import {
   editInsertUl,
   editItalic,
   editRedo,
+  editSetStyleOnTarget,
   editStrike,
   editUnderline,
   editUndo,
   type HtmlEditContext,
   type HtmlEditTarget,
 } from "./htmlEditActions";
+import { openColorPickerModal } from "./colorPickerModal";
 import { openDocumentMediaModal } from "./documentMediaModal";
 import { openInsertLinkModal } from "./insertLinkModal";
 import { openInsertMediaModal } from "./insertMediaModal";
@@ -30,11 +33,19 @@ import { buildSourceMapScript, injectSourceMarkers } from "./sourceMap";
 import { getPreviewBaseHref, injectPreviewBaseTag } from "./vaultResources";
 import { buildPreviewInjectedScript } from "./previewScripts";
 import {
+  INSERT_POSITION_LABELS,
+  modeIsLayout,
+  modeShowsInspector,
   PreviewInteractionMode,
+  suggestInsertBlockPosition,
   VIEW_TYPE_HTML,
   ViewMode,
+  viewModeIsCanvasOnly,
+  viewModeShowsPreview,
+  type InsertBlockPosition,
   type PreviewElementInfo,
 } from "./constants";
+import { openInsertBlockModal } from "./insertBlockModal";
 import { resolvePreviewInteractionMode, syncLegacyPreviewFlags } from "./settings";
 import type HtmlEditorPlugin from "./main";
 
@@ -54,8 +65,14 @@ export class HtmlView extends TextFileView {
   private inspectorBar!: HTMLElement;
   private inspectorSummaryEl!: HTMLElement;
   private inspectorPathEl!: HTMLElement;
+  private insertHintBar!: HTMLElement;
+  private insertHintEl!: HTMLElement;
+  private insertPositionBtns: Partial<Record<InsertBlockPosition, HTMLElement>> = {};
   private locateSourceBtn!: HTMLElement;
   private selectedPreview: PreviewElementInfo | null = null;
+  private insertBlockPosition: InsertBlockPosition = "after";
+  /** 用户手动改过插入位置后，换选元素不再自动改位置 */
+  private insertPositionManual = false;
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private previewSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private isDragging = false;
@@ -91,6 +108,7 @@ export class HtmlView extends TextFileView {
     container.addClass("html-editor-container");
 
     this.toolbarEl = container.createDiv("html-editor-toolbar");
+    this.toolbarEl.addEventListener("mousedown", () => this.cancelPreviewDrag());
     this.buildToolbar();
 
     this.contentArea = container.createDiv("html-editor-content");
@@ -112,7 +130,7 @@ export class HtmlView extends TextFileView {
       this.lastEditTarget = "preview";
     });
 
-    if (this.currentMode === ViewMode.Preview) {
+    if (this.currentMode === ViewMode.Preview || this.currentMode === ViewMode.Canvas) {
       this.resizeHandle.style.display = "none";
     }
 
@@ -125,6 +143,21 @@ export class HtmlView extends TextFileView {
       }
       if (e.data?.type === "html-editor-dom-changed") {
         this.schedulePreviewSyncFromIframe();
+      }
+      if (e.data?.type === "html-editor-insert-done") {
+        const pos = e.data.position as InsertBlockPosition | undefined;
+        const anchor = String(e.data.anchorLabel ?? "元素");
+        const block = String(e.data.blockLabel ?? "新块");
+        const where =
+          pos === "inside"
+            ? "内部末尾"
+            : pos === "before"
+              ? "上方"
+              : "下方";
+        new Notice(
+          `已在「${anchor}」的${where}插入 ${block}。点 Refresh 后新块可点选映射源码。`,
+          5000
+        );
       }
     };
     window.addEventListener("message", this.messageHandler);
@@ -141,7 +174,7 @@ export class HtmlView extends TextFileView {
     this.buildEditorSurface();
     if (hadFocus) this.cmView?.focus();
     this.updateStatus();
-    if (this.currentMode === ViewMode.Preview || this.currentMode === ViewMode.Split) {
+    if (viewModeShowsPreview(this.currentMode)) {
       this.refreshPreview();
     }
   }
@@ -178,14 +211,20 @@ export class HtmlView extends TextFileView {
   private buildToolbar(): void {
     this.toolbarEl.empty();
 
-    const modes: { mode: ViewMode; label: string }[] = [
-      { mode: ViewMode.Preview, label: "Preview" },
+    const modes: { mode: ViewMode; label: string; title?: string }[] = [
+      { mode: ViewMode.Preview, label: "Preview", title: "仅预览（可点选定位源码）" },
+      {
+        mode: ViewMode.Canvas,
+        label: "画布",
+        title: "仅页面编辑：不显示源码、不跳转代码",
+      },
       { mode: ViewMode.Source, label: "Source" },
       { mode: ViewMode.Split, label: "Split" },
     ];
 
-    for (const { mode, label } of modes) {
+    for (const { mode, label, title } of modes) {
       const btn = this.toolbarEl.createEl("button", { text: label });
+      if (title) btn.setAttribute("title", title);
       if (this.currentMode === mode) btn.addClass("is-active");
       btn.addEventListener("click", () => this.switchMode(mode));
     }
@@ -198,6 +237,9 @@ export class HtmlView extends TextFileView {
 
     const editRow = this.toolbarEl.createDiv("html-editor-toolbar-edit");
     this.buildEditToolbar(editRow);
+
+    const protoRow = this.toolbarEl.createDiv("html-editor-toolbar-prototype");
+    this.buildPrototypeToolbar(protoRow);
 
     this.toolbarEl.createDiv("toolbar-separator");
 
@@ -230,10 +272,11 @@ export class HtmlView extends TextFileView {
   }
 
   private getEditContext(): HtmlEditContext {
+    const mode = resolvePreviewInteractionMode(this.plugin.settings);
     return {
       target: this.lastEditTarget,
-      previewEditable:
-        resolvePreviewInteractionMode(this.plugin.settings) === PreviewInteractionMode.Text,
+      previewEditable: mode === PreviewInteractionMode.Text,
+      layoutMode: mode === PreviewInteractionMode.Layout,
       cmView: this.cmView,
       postPreviewCmd: (command, value) => this.postPreviewCmd(command, value),
     };
@@ -245,17 +288,17 @@ export class HtmlView extends TextFileView {
       {
         mode: PreviewInteractionMode.Select,
         label: "选择",
-        title: "悬停高亮；单击选中最内层；同位置连点或「下一层」切外层；Shift+单击直接选最外层",
+        title: "点选与切层、定位源码；不拖动",
+      },
+      {
+        mode: PreviewInteractionMode.Layout,
+        label: "布局",
+        title: "原型：连点切层 → 选「内/下/上」插入位置 → 插块或拖动",
       },
       {
         mode: PreviewInteractionMode.Text,
         label: "改文字",
-        title: "在预览中直接编辑文字；Alt+单击（Shift=选外层）可定位左侧源码",
-      },
-      {
-        mode: PreviewInteractionMode.Drag,
-        label: "拖动",
-        title: "拖动块级元素，会写入 position/transform",
+        title: "在预览中直接编辑文字；Alt+单击可定位左侧源码",
       },
     ];
     this.interactionBtns = {};
@@ -274,10 +317,12 @@ export class HtmlView extends TextFileView {
     this.plugin.settings.previewInteractionMode = mode;
     syncLegacyPreviewFlags(this.plugin.settings);
     await this.plugin.saveSettings();
+    const active = resolvePreviewInteractionMode(this.plugin.settings);
     for (const [m, btn] of Object.entries(this.interactionBtns)) {
-      btn?.toggleClass("is-active", m === mode);
+      btn?.toggleClass("is-active", m === active);
     }
     this.selectedPreview = null;
+    this.insertPositionManual = false;
     this.updateInspectorBar();
     this.refreshPreview();
   }
@@ -290,8 +335,12 @@ export class HtmlView extends TextFileView {
     const actions = this.inspectorBar.createDiv("html-editor-inspector-actions");
 
     this.locateSourceBtn = actions.createEl("button", { text: "定位源码" });
-    this.locateSourceBtn.setAttribute("title", "在左侧源码中选中该元素的起始标签");
+    this.locateSourceBtn.setAttribute("title", "在左侧源码中选中该元素的起始标签（画布模式不可用）");
     this.locateSourceBtn.addEventListener("click", () => {
+      if (viewModeIsCanvasOnly(this.currentMode)) {
+        new Notice("画布模式不显示源码。请切换到 Split 或 Source 查看代码。");
+        return;
+      }
       if (this.selectedPreview) this.locateSelectedInSource();
     });
 
@@ -310,7 +359,38 @@ export class HtmlView extends TextFileView {
     );
     cycleBtn.addEventListener("click", () => this.postInspectorCmd("cycle"));
 
+    this.insertHintBar = this.previewPane.createDiv("html-editor-insert-hint");
+    const insertRow = this.insertHintBar.createDiv("html-editor-insert-hint-row");
+    insertRow.createSpan({ text: "插入位置", cls: "html-editor-insert-hint-label" });
+    const posGroup = insertRow.createDiv("html-editor-insert-position-group");
+    for (const pos of ["inside", "after", "before"] as InsertBlockPosition[]) {
+      const meta = INSERT_POSITION_LABELS[pos];
+      const btn = posGroup.createEl("button", { text: meta.short });
+      btn.setAttribute("title", meta.title);
+      btn.addEventListener("click", () => this.setInsertBlockPosition(pos, true));
+      this.insertPositionBtns[pos] = btn;
+    }
+    this.insertHintEl = this.insertHintBar.createDiv("html-editor-insert-hint-text");
+
     this.updateInspectorBar();
+  }
+
+  private setInsertBlockPosition(pos: InsertBlockPosition, manual: boolean): void {
+    this.insertBlockPosition = pos;
+    if (manual) this.insertPositionManual = true;
+    for (const [p, btn] of Object.entries(this.insertPositionBtns)) {
+      btn?.toggleClass("is-active", p === pos);
+    }
+    this.updateInsertHintBar();
+    this.syncInsertPositionPreview();
+  }
+
+  private syncInsertPositionPreview(): void {
+    if (!modeIsLayout(resolvePreviewInteractionMode(this.plugin.settings))) return;
+    this.previewFrame?.contentWindow?.postMessage(
+      { type: "html-editor-insert-position", position: this.insertBlockPosition },
+      "*"
+    );
   }
 
   private postInspectorCmd(command: string): void {
@@ -324,6 +404,7 @@ export class HtmlView extends TextFileView {
     this.selectedPreview = {
       line: data.line,
       tag: data.tag,
+      moduleType: data.moduleType ?? "元素",
       label: data.label,
       path: data.path,
       depth: data.depth,
@@ -333,8 +414,15 @@ export class HtmlView extends TextFileView {
       to: data.to,
     };
     this.lastEditTarget = "preview";
+    if (!this.insertPositionManual) {
+      this.insertBlockPosition = suggestInsertBlockPosition(data.tag);
+    }
     this.updateInspectorBar();
-    if (this.plugin.settings.autoLocateOnSelect) {
+    this.syncInsertPositionPreview();
+    if (
+      this.plugin.settings.autoLocateOnSelect &&
+      !viewModeIsCanvasOnly(this.currentMode)
+    ) {
       this.locateSelectedInSource();
     }
   }
@@ -342,6 +430,7 @@ export class HtmlView extends TextFileView {
   private locateSelectedInSource(): void {
     const s = this.selectedPreview;
     if (!s || !this.cmView) return;
+    if (viewModeIsCanvasOnly(this.currentMode)) return;
     if (this.currentMode === ViewMode.Preview) {
       this.switchMode(ViewMode.Split);
     }
@@ -356,14 +445,21 @@ export class HtmlView extends TextFileView {
   private updateInspectorBar(): void {
     if (!this.inspectorBar) return;
     const mode = resolvePreviewInteractionMode(this.plugin.settings);
+    const inPreview = viewModeShowsPreview(this.currentMode);
+    const canvas = viewModeIsCanvasOnly(this.currentMode);
     const show =
-      mode === PreviewInteractionMode.Select &&
-      this.selectedPreview !== null &&
-      (this.currentMode === ViewMode.Preview || this.currentMode === ViewMode.Split);
+      modeShowsInspector(mode) && this.selectedPreview !== null && inPreview;
     this.inspectorBar.style.display = show ? "" : "none";
+    if (this.locateSourceBtn) {
+      this.locateSourceBtn.style.display = canvas ? "none" : "";
+    }
+    this.updateInsertHintBar();
     if (!show || !this.selectedPreview) return;
     const s = this.selectedPreview;
-    const summary = `${s.label} · 源码第 ${s.line} 行 · 层级 ${s.depth + 1}/${s.depthTotal}`;
+    const typeBadge = `【${s.moduleType}】`;
+    const summary = canvas
+      ? `${typeBadge} ${s.label} · 层级 ${s.depth + 1}/${s.depthTotal}`
+      : `${typeBadge} ${s.label} · 源码第 ${s.line > 0 ? s.line : "?"} 行 · 层级 ${s.depth + 1}/${s.depthTotal}`;
     const path = s.path || s.label;
     this.inspectorSummaryEl.setText(summary);
     this.inspectorPathEl.setText(path);
@@ -371,8 +467,30 @@ export class HtmlView extends TextFileView {
     this.inspectorPathEl.setAttr("title", path);
   }
 
+  private updateInsertHintBar(): void {
+    if (!this.insertHintBar) return;
+    const mode = resolvePreviewInteractionMode(this.plugin.settings);
+    const inPreview = viewModeShowsPreview(this.currentMode);
+    const show =
+      modeIsLayout(mode) && this.selectedPreview !== null && inPreview;
+    this.insertHintBar.style.display = show ? "" : "none";
+    if (!show || !this.selectedPreview) return;
+    for (const [p, btn] of Object.entries(this.insertPositionBtns)) {
+      btn?.toggleClass("is-active", p === this.insertBlockPosition);
+    }
+    const target = this.selectedPreview.label || this.selectedPreview.tag;
+    const hint = INSERT_POSITION_LABELS[this.insertBlockPosition].hint(target);
+    this.insertHintEl.setText(hint);
+    this.insertHintEl.setAttr("title", hint);
+  }
+
   private postPreviewCmd(command: string, value?: string): void {
     this.previewFrame?.contentWindow?.postMessage({ type: "html-editor-cmd", command, value }, "*");
+  }
+
+  /** 在工具栏/弹窗操作后释放 iframe 内可能卡住的拖动状态 */
+  private cancelPreviewDrag(): void {
+    this.previewFrame?.contentWindow?.postMessage({ type: "html-editor-cancel-drag" }, "*");
   }
 
   /** 供命令面板调用 */
@@ -429,6 +547,70 @@ export class HtmlView extends TextFileView {
     add("删块", "删除当前块级元素（预览）或当前行（源码）", () => editDeleteBlock(ctx()));
   }
 
+  private buildPrototypeToolbar(parent: HTMLElement): void {
+    const ctx = () => this.getEditContext();
+    const add = (label: string, title: string, run: () => void) => {
+      const btn = parent.createEl("button", { text: label });
+      btn.addClass("toolbar-edit-btn");
+      btn.setAttribute("title", title);
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        run();
+      });
+    };
+
+    const requireLayout = (run: () => void) => {
+      if (!ctx().layoutMode) {
+        new Notice("请切换到「布局」模式后再使用原型工具（插块 / 设色）");
+        return;
+      }
+      if (ctx().target !== "preview") {
+        new Notice("请先在右侧预览中点击选中一个元素");
+        return;
+      }
+      run();
+    };
+
+    add("字色", "设置选中元素或选区文字颜色", () => {
+      this.cancelPreviewDrag();
+      openColorPickerModal(this.app, { title: "文字颜色", initial: "#333333" }, (hex) => {
+        editSetStyleOnTarget(ctx(), "color", hex);
+      });
+    });
+    add("底色", "设置选中元素背景色", () => {
+      this.cancelPreviewDrag();
+      openColorPickerModal(this.app, { title: "背景颜色", initial: "#f3f4f6" }, (hex) => {
+        editSetStyleOnTarget(ctx(), "backgroundColor", hex);
+      });
+    });
+    parent.createDiv("toolbar-separator");
+
+    add("插块…", "选择插入位置与块类型（需先在预览中选中元素）", () => {
+      this.cancelPreviewDrag();
+      requireLayout(() => this.openInsertBlockDialog());
+    });
+  }
+
+  private openInsertBlockDialog(): void {
+    if (!this.selectedPreview) {
+      new Notice("请先在右侧预览中点击选中一个元素");
+      return;
+    }
+    openInsertBlockModal(
+      this.app,
+      {
+        selection: this.selectedPreview,
+        position: this.insertBlockPosition,
+        canvasOnly: viewModeIsCanvasOnly(this.currentMode),
+      },
+      (block, position) => {
+        this.setInsertBlockPosition(position, true);
+        editInsertBlock(this.getEditContext(), block.html, position);
+      }
+    );
+  }
+
   private openLinkDialog(): void {
     const cm = this.cmView;
     const defaultText = cm
@@ -451,6 +633,10 @@ export class HtmlView extends TextFileView {
       this.file,
       () => this.data ?? "",
       (src) => {
+        if (viewModeIsCanvasOnly(this.currentMode)) {
+          new Notice("画布模式不显示源码。请切换到 Split 或 Source 后在左侧查找。");
+          return;
+        }
         if (this.currentMode === ViewMode.Preview) this.switchMode(ViewMode.Split);
         if (this.cmView && !cmFindAndSelect(this.cmView, src)) {
           new Notice("源码中未找到该路径");
@@ -466,7 +652,7 @@ export class HtmlView extends TextFileView {
 
     this.resizeHandle.style.display = mode === ViewMode.Split ? "" : "none";
 
-    if (mode === ViewMode.Preview || mode === ViewMode.Split) {
+    if (viewModeShowsPreview(mode)) {
       this.refreshPreview();
     }
 
@@ -515,7 +701,7 @@ export class HtmlView extends TextFileView {
   private schedulePreviewRefresh(): void {
     if (
       !this.plugin.settings.autoRefresh ||
-      (this.currentMode !== ViewMode.Split && this.currentMode !== ViewMode.Preview)
+      !viewModeShowsPreview(this.currentMode)
     ) {
       return;
     }
@@ -628,6 +814,7 @@ export class HtmlView extends TextFileView {
     html = html.replace(/<script[^>]*data-injected="html-editor-map"[^>]*>[\s\S]*?<\/script>/gi, "");
     html = html.replace(/<script[^>]*data-injected="html-editor"[\s\S]*?<\/script>/gi, "");
     html = html.replace(/\s*data-source-(?:id|line)="[^"]*"/gi, "");
+    html = html.replace(/\s*data-he-proto="[^"]*"/gi, "");
     html = html.replace(/\s*html-editor-(?:drag-active|drag-hover|hover|selected)/g, "");
     return html;
   }
@@ -648,6 +835,7 @@ export class HtmlView extends TextFileView {
   }
 
   private scrollToLine(line: number): void {
+    if (viewModeIsCanvasOnly(this.currentMode)) return;
     if (this.currentMode === ViewMode.Preview) {
       this.switchMode(ViewMode.Split);
     }
@@ -683,7 +871,7 @@ export class HtmlView extends TextFileView {
       }
     }
     this.updateStatus();
-    if (this.currentMode === ViewMode.Preview || this.currentMode === ViewMode.Split) {
+    if (viewModeShowsPreview(this.currentMode)) {
       this.refreshPreview();
     }
   }

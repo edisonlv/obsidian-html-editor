@@ -1,6 +1,7 @@
 import type { EditorView } from "@codemirror/view";
 import { cmInsertAtCursor, cmUndo, cmRedo, cmWrapSelection } from "./htmlEditorCm";
 import { escapeHtmlAttr } from "./vaultResources";
+import type { InsertBlockPosition } from "./constants";
 import type { InsertLinkResult } from "./insertLinkModal";
 
 export type HtmlEditTarget = "source" | "preview";
@@ -8,12 +9,18 @@ export type HtmlEditTarget = "source" | "preview";
 export interface HtmlEditContext {
   target: HtmlEditTarget;
   previewEditable: boolean;
+  /** 布局/原型模式：对当前选中块设色、插块、拖动 */
+  layoutMode: boolean;
   cmView: EditorView | null;
   postPreviewCmd: (command: string, value?: string) => void;
 }
 
 function usePreview(ctx: HtmlEditContext): boolean {
   return ctx.target === "preview" && ctx.previewEditable;
+}
+
+function useLayoutPreview(ctx: HtmlEditContext): boolean {
+  return ctx.target === "preview" && ctx.layoutMode;
 }
 
 export function editUndo(ctx: HtmlEditContext): boolean {
@@ -106,6 +113,44 @@ export function editInsertLinkAdvanced(ctx: HtmlEditContext, result: InsertLinkR
 }
 
 /** 插入任意 HTML 片段（图片/视频/音频等） */
+export function editSetStyleOnTarget(
+  ctx: HtmlEditContext,
+  prop: "color" | "backgroundColor",
+  value: string
+): void {
+  if (useLayoutPreview(ctx)) {
+    ctx.postPreviewCmd("setStyle", JSON.stringify({ prop, value }));
+    return;
+  }
+  if (usePreview(ctx)) {
+    ctx.postPreviewCmd(prop === "color" ? "foreColor" : "hiliteColor", value);
+    return;
+  }
+  if (ctx.cmView) {
+    const { from, to } = ctx.cmView.state.selection.main;
+    const selected = ctx.cmView.state.sliceDoc(from, to);
+    const style = prop === "color" ? `color:${value}` : `background-color:${value}`;
+    const wrap = selected
+      ? `<span style="${style}">${selected}</span>`
+      : `<span style="${style}"></span>`;
+    ctx.cmView.dispatch({ changes: { from, to, insert: wrap } });
+  }
+}
+
+export function editInsertBlock(
+  ctx: HtmlEditContext,
+  html: string,
+  position?: InsertBlockPosition
+): void {
+  if (useLayoutPreview(ctx)) {
+    const payload =
+      position != null ? JSON.stringify({ html, position }) : html;
+    ctx.postPreviewCmd("insertBlock", payload);
+    return;
+  }
+  editInsertHtmlSnippet(ctx, html);
+}
+
 export function editInsertHtmlSnippet(ctx: HtmlEditContext, html: string): void {
   if (usePreview(ctx)) {
     ctx.postPreviewCmd("insertHTML", html);
