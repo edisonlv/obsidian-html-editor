@@ -68,6 +68,8 @@ export interface PreviewElementInfo {
   /** 源码中起始标签字节范围（含 `<...>`） */
   from?: number;
   to?: number;
+  attributes?: Record<string, string>;
+  inlineStyles?: Record<string, string>;
 }
 
 /** 原型块插入相对当前选中元素的位置 */

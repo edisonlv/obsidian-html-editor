@@ -97,6 +97,20 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
   function __hePostSelect(el, depth, depthTotal) {
     var sid = el.dataset.sourceId != null ? parseInt(el.dataset.sourceId, 10) : -1;
     var entry = sid >= 0 && __heMap[sid] ? __heMap[sid] : null;
+    var attrs = {};
+    if (el.attributes) {
+      for (var ai = 0; ai < el.attributes.length; ai++) {
+        var a = el.attributes[ai];
+        attrs[a.name] = a.value;
+      }
+    }
+    var inlineStyles = {};
+    if (el.style) {
+      for (var si = 0; si < el.style.length; si++) {
+        var prop = el.style[si];
+        inlineStyles[prop] = el.style.getPropertyValue(prop);
+      }
+    }
     window.parent.postMessage({
       type: 'html-editor-select',
       sourceId: sid >= 0 ? sid : undefined,
@@ -108,7 +122,9 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
       path: __hePath(el),
       line: entry ? entry.line : (el.dataset.sourceLine ? parseInt(el.dataset.sourceLine, 10) : 0),
       depth: depth,
-      depthTotal: depthTotal
+      depthTotal: depthTotal,
+      attributes: attrs,
+      inlineStyles: inlineStyles
     }, '*');
   }
 
@@ -315,8 +331,28 @@ export function buildPreviewInjectedScript(mode: PreviewInteractionMode): string
       try {
         if (cmd === 'setStyle' && selectedEl) {
           var styleObj = JSON.parse(val);
-          if (styleObj && styleObj.prop) selectedEl.style[styleObj.prop] = styleObj.value || '';
+          if (styleObj && styleObj.prop) {
+            if (styleObj.value) {
+              selectedEl.style[styleObj.prop] = styleObj.value;
+            } else {
+              selectedEl.style.removeProperty(styleObj.prop);
+            }
+          }
           __heNotifyChanged();
+          __hePostSelect(selectedEl, cycleIdx, lastStack.length || 1);
+          return;
+        }
+        if (cmd === 'setAttribute' && selectedEl) {
+          var attrObj = JSON.parse(val);
+          if (attrObj && attrObj.name) {
+            if (attrObj.value) {
+              selectedEl.setAttribute(attrObj.name, attrObj.value);
+            } else {
+              selectedEl.removeAttribute(attrObj.name);
+            }
+            __heNotifyChanged();
+            __hePostSelect(selectedEl, cycleIdx, lastStack.length || 1);
+          }
           return;
         }
         if (cmd === 'insertBlock') {
